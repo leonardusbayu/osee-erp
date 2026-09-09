@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% load static finance_format humanize %}
+{% block title %}Rekap {{ month.month_label }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{% static 'imports.css' %}">{% endblock %}
+{% block content %}
+<div class="imports-workspace">
+  <a class="back-link" href="{% url 'imports_overview' %}">← Kembali ke Data 2026</a>
+  <div class="page-heading">
+    <div><div class="eyebrow">RINCIAN DARI DOKUMEN SUMBER</div><h1>{{ month.month_label }}<span class="heading-dot">.</span></h1><p>Periksa angka, saluran, dan tanggal tanpa mengubah isi sumber.</p></div>
+    <div class="heading-actions"><span class="pill pill-amber">Belum dibukukan</span>{% if source_pdf_url %}<a class="button button-secondary" href="{{ source_pdf_url }}">{% include 'app/icons.html' with name='download' %}Unduh PDF sumber</a>{% endif %}</div>
+  </div>
+
+  <div class="import-boundary" role="note"><span class="import-boundary-icon">{% include 'app/icons.html' with name='info' %}</span><div><strong>Ini adalah rekap yang dilaporkan.</strong><p>Jumlah dan nilai sumber belum menjadi invoice, bukti penerimaan bank, laba, atau dasar pajak. Tanggal asli tetap ditampilkan; usulan tanggal konteks belum merupakan koreksi yang disetujui.</p></div></div>
+
+  <section class="import-metrics" aria-label="Ringkasan rekap bulan ini">
+    <article class="panel import-metric import-metric-primary"><span>Nilai tercetak di rekap</span><strong>{% if month.printed_amount is not None %}{{ month.printed_amount|money }}{% else %}—{% endif %}</strong><small>Angka yang dilaporkan untuk bulan ini</small></article>
+    <article class="panel import-metric"><span>Peserta tercetak</span><strong>{% if month.printed_count is not None %}{{ month.printed_count|intcomma }}{% else %}—{% endif %}</strong><small>Jumlah pada rekap sumber</small></article>
+    <article class="panel import-metric"><span>Peserta dari rincian</span><strong>{% if month.detail_count is not None %}{{ month.detail_count|intcomma }}{% else %}—{% endif %}</strong><small>Jumlah pada baris sumber yang terbaca</small></article>
+    <article class="panel import-metric"><span>Catatan pemeriksaan</span><strong>{% if month.exception_count is not None %}{{ month.exception_count|intcomma }}{% else %}—{% endif %}</strong><small>Halaman sumber {% if month.page is not None %}{{ month.page }}{% else %}—{% endif %}</small></article>
+  </section>
+
+  <div class="import-month-coverage"><span class="pill import-neutral-pill">{{ month.coverage|default:'Cakupan perlu diperiksa' }}</span><p>Periode sumber: {{ month.source_period }}. Nilai kosong ditampilkan sebagai — dan tidak diganti dengan nol.</p></div>
+
+  <section class="panel import-section" aria-labelledby="channels-heading">
+    <div class="panel-heading"><div><h2 id="channels-heading">Saluran pada dokumen</h2><p>Nama dan harga mengikuti label sumber, bukan kontrak atau harga aktif saat ini.</p></div></div>
+    <div class="table-wrap"><table class="data-table import-table">
+      <caption class="sr-only">Perbandingan jumlah dan nilai yang tercetak per saluran</caption>
+      <thead><tr><th scope="col">Label sumber</th><th scope="col" class="num">Harga di kepala kolom</th><th scope="col" class="num">Peserta tercetak</th><th scope="col" class="num">Nilai tercetak</th><th scope="col" class="num">Dari rincian</th><th scope="col">Lokasi sumber</th></tr></thead>
+      <tbody>{% for channel in channels %}<tr><td class="import-wrap-cell"><strong>{{ channel.source_label }}</strong></td><td class="num">{% if channel.header_price is not None %}{{ channel.header_price|money }}{% else %}<span class="muted">—</span>{% endif %}</td><td class="num">{% if channel.printed_count is not None %}{{ channel.printed_count|intcomma }}{% else %}<span class="muted">—</span>{% endif %}</td><td class="num">{% if channel.printed_amount is not None %}{{ channel.printed_amount|money }}{% else %}<span class="muted">—</span>{% endif %}</td><td class="num">{% if channel.detail_count is not None %}{{ channel.detail_count|intcomma }}{% else %}<span class="muted">—</span>{% endif %}</td><td class="import-locator">{{ channel.locator|default:'—' }}</td></tr>{% empty %}<tr><td colspan="6" class="import-empty-cell">Belum ada saluran yang tersedia pada hasil impor bulan ini.</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </section>
+
+  <section class="panel import-section" aria-labelledby="details-heading">
+    <div class="panel-heading"><div><h2 id="details-heading">Baris rincian sumber</h2><p>Tanggal yang tertulis dan tanggal usulan tetap bisa dibandingkan.</p></div>{% if page_obj %}<span class="pill import-neutral-pill">{{ page_obj.paginator.count|intcomma }} baris</span>{% endif %}</div>
+    <form class="list-toolbar" method="get"><label for="source-search">Cari mitra atau tanggal</label><input id="source-search" type="search" name="q" value="{{ q }}" maxlength="100"><button class="button button-secondary button-small" type="submit">Cari rincian</button></form><div class="table-wrap"><table class="data-table import-table import-detail-table">
+      <caption class="sr-only">Baris rinci dengan tanggal sumber, usulan konteks, dan lokasi pada PDF</caption>
+      <thead><tr><th scope="col">Saluran</th><th scope="col">Tanggal tertulis</th><th scope="col">Tanggal terbaca</th><th scope="col">Usulan konteks</th><th scope="col" class="num">Jumlah</th><th scope="col">Pemeriksaan tanggal</th><th scope="col">Lokasi sumber</th></tr></thead>
+      <tbody>{% for detail in details %}<tr{% if detail.year_conflict or detail.date_ambiguous %} class="import-conflict-row"{% endif %}><td class="import-wrap-cell"><strong>{{ detail.source_label }}</strong></td><td class="import-original-date">{{ detail.original_date_text|default:'—' }}</td><td>{% if detail.parsed_source_date %}{{ detail.parsed_source_date }}{% else %}<span class="muted">—</span>{% endif %}</td><td>{% if detail.proposed_context_date %}{{ detail.proposed_context_date }}<small class="cell-sub">Usulan, belum disetujui</small>{% else %}<span class="muted">—</span>{% endif %}</td><td class="num">{% if detail.quantity is not None %}{{ detail.quantity|intcomma }}{% else %}<span class="muted">—</span>{% endif %}</td><td>{% if detail.year_conflict %}<span class="pill pill-amber">Tahun berbeda</span>{% elif detail.date_ambiguous %}<span class="pill pill-amber">Tanggal belum pasti</span><small class="cell-sub">{{ detail.source_date_candidates|join:', ' }}</small>{% else %}<span class="import-small">Tidak ditandai</span>{% endif %}</td><td class="import-locator">{{ detail.locator|default:'—' }}{% if detail.source_page is not None %}<small class="cell-sub">Halaman {{ detail.source_page }}</small>{% endif %}</td></tr>{% empty %}<tr><td colspan="7" class="import-empty-cell">Baris rinci belum tersedia. Angka rekap tetap ditampilkan sesuai sumber.</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% if page_obj %}<div class="import-pagination"><span>Baris {{ page_obj.start_index }}–{{ page_obj.end_index }} dari {{ page_obj.paginator.count|intcomma }}</span><nav aria-label="Halaman rincian sumber">{% if page_obj.has_previous %}<a class="button button-secondary button-small" href="?page={{ page_obj.previous_page_number }}&amp;q={{ q|urlencode }}">← Sebelumnya</a>{% endif %}<span>Halaman {{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>{% if page_obj.has_next %}<a class="button button-secondary button-small" href="?page={{ page_obj.next_page_number }}&amp;q={{ q|urlencode }}">Berikutnya →</a>{% endif %}</nav></div>{% endif %}
+  </section>
+
+  <section class="panel import-section" aria-labelledby="month-exceptions-heading"><div class="panel-heading"><div><h2 id="month-exceptions-heading">Catatan pemeriksaan bulan ini</h2><p>Gunakan lokasi sumber untuk mencocokkan catatan dengan dokumen aslinya.</p></div></div><ul class="import-exceptions">{% for exception in exceptions %}<li><span class="import-exception-mark">{% include 'app/icons.html' with name='alert' %}</span><p>{% if exception.message %}{{ exception.message }}{% else %}{{ exception }}{% endif %}</p></li>{% empty %}<li><p>Tidak ada catatan yang ditampilkan. Kelengkapan dan ketepatan sumber tetap perlu diperiksa.</p></li>{% endfor %}</ul></section>
+</div>
+{% endblock %}

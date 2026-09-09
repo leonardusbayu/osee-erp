@@ -1,0 +1,1 @@
+<form method="get" class="director-period"><label class="sr-only" for="director-year">Tahun laporan</label><select id="director-year" name="year">{% for option in year_options %}<option value="{{ option }}" {% if option == year %}selected{% endif %}>{{ option }}</option>{% endfor %}</select><button class="button button-secondary" type="submit">Tampilkan</button></form>

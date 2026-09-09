@@ -1,0 +1,10 @@
+<section class="panel spaced">
+  <div class="panel-heading"><div><h2>Dokumen pendukung</h2><p>Arsip privat untuk menelusuri transaksi ini.</p></div></div>
+  <div class="panel-body">
+    {% for source in import_sources %}<div class="attachment-row"><div><a class="table-link" href="{% url 'import_source' source.pk %}">{{ source.original_name }}</a><small class="cell-sub">Dokumen asli dari impor · {{ source.size|filesizeformat }}</small></div><a class="button button-small button-secondary" href="{% url 'import_source' source.pk %}">Unduh</a></div>{% endfor %}
+    {% for attachment in attachments %}
+    <div class="attachment-row"><div><a class="table-link" href="{% url 'evidence:download' attachment.pk %}">{{ attachment.original_name }}</a><small class="cell-sub">{{ attachment.size|filesizeformat }} · {{ attachment.created_at|date:'d M Y H:i' }}</small></div><a class="button button-small button-secondary" href="{% url 'evidence:download' attachment.pk %}">{% include 'app/icons.html' with name='download' %}Unduh</a></div>
+    {% empty %}{% if not import_sources %}<p class="muted small">Belum ada dokumen. Tambahkan invoice supplier, bukti pesanan, atau bukti layanan yang terkait.</p>{% endif %}{% endfor %}
+    {% if can_write %}<form class="attachment-form" method="post" enctype="multipart/form-data" action="{{ attachment_url }}">{% csrf_token %}{{ attachment_form.as_p }}<button class="button button-secondary" type="submit">{% include 'app/icons.html' with name='plus' %}Simpan dokumen</button></form>{% endif %}
+  </div>
+</section>

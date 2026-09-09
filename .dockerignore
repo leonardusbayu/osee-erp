@@ -1,0 +1,10 @@
+.venv
+.env
+.local
+.git
+.omx
+tmp
+test-results
+docs/research
+__pycache__
+*.sqlite3

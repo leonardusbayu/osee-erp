@@ -1,0 +1,10 @@
+{% extends 'director/base.html' %}
+{% block title %}{{ page_title }}{% endblock %}
+{% block director_content %}
+<a class="back-link" href="{{ back_url }}">← Kembali</a>
+<div class="page-heading"><div><div class="eyebrow">DIREKTUR / {{ section_label }}</div><h1>{{ page_title }}<span class="heading-dot">.</span></h1><p>{{ description }}</p></div></div>
+<div class="director-form-layout"><section class="panel form-panel"><form method="post" novalidate enctype="multipart/form-data">{% csrf_token %}{% if expected_version %}<input type="hidden" name="expected_version" value="{{ expected_version }}">{% endif %}{% if entry_key %}<input type="hidden" name="idempotency_key" value="{{ entry_key }}">{% endif %}
+{% include 'director/fields.html' %}
+<div class="form-actions"><a class="button button-secondary" href="{{ back_url }}">Batal</a><button class="button button-primary" type="submit">{{ submit_label|default:'Simpan' }}</button></div></form></section>
+<aside class="director-note"><span class="module-icon">{% include 'app/icons.html' with name='info' %}</span><h3>{{ note_title|default:'Catatan yang dapat ditelusuri' }}</h3><p>{{ note|default:'Simpan periode, penanggung jawab, dan dasar informasi. Setiap perubahan dicatat pada aktivitas perusahaan.' }}</p></aside></div>
+{% endblock %}

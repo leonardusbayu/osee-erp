@@ -1,0 +1,15 @@
+{% if can_director %}
+<a href="{% url 'director:overview' %}" class="{% if active_nav == 'director_overview' %}active{% endif %}">{% include 'app/icons.html' with name='grid' %}Ringkasan Direktur</a>
+<a href="{% url 'director:growth' %}" class="{% if active_nav == 'director_growth' %}active{% endif %}">{% include 'app/icons.html' with name='chart' %}Pertumbuhan &amp; Mitra</a>
+<a href="{% url 'director:cash' %}" class="{% if active_nav == 'director_cash' %}active{% endif %}">{% include 'app/icons.html' with name='bank' %}Kas &amp; Kewajiban</a>
+{% endif %}
+<a href="{% url 'marketing:overview' %}">{% include 'app/icons.html' with name='users' %}Workspace Marketing</a>
+<a href="{% url 'director:marketing' %}" class="{% if active_nav == 'director_marketing' %}active{% endif %}">{% include 'app/icons.html' with name='book' %}Laporan Kanal Lama</a>
+{% if can_director %}
+<a href="{% url 'director:budgets' %}" class="{% if active_nav == 'director_budgets' %}active{% endif %}">{% include 'app/icons.html' with name='wallet' %}Anggaran</a>
+<a href="{% url 'director:objectives' %}" class="{% if active_nav == 'director_objectives' %}active{% endif %}">{% include 'app/icons.html' with name='check' %}Target Perusahaan</a>
+<a href="{% url 'director:decisions' %}" class="{% if active_nav == 'director_decisions' %}active{% endif %}">{% include 'app/icons.html' with name='receipt' %}Keputusan &amp; Kebijakan</a>
+<a href="{% url 'director:scenarios' %}" class="{% if active_nav == 'director_scenarios' %}active{% endif %}">{% include 'app/icons.html' with name='chart' %}Simulasi</a>
+<a href="{% url 'director:readiness' %}" class="{% if active_nav == 'director_readiness' %}active{% endif %}">{% include 'app/icons.html' with name='shield' %}Kesiapan Data</a>
+<a href="{% url 'director:reports' %}" class="{% if active_nav == 'director_reports' %}active{% endif %}">{% include 'app/icons.html' with name='book' %}Laporan Rapat</a>
+{% endif %}

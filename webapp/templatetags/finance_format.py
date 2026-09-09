@@ -16,7 +16,9 @@ def money(value):
     try:
         amount = Decimal(str(value or 0))
         sign = "−" if amount < 0 else ""
-        return f"{sign}Rp{abs(amount):,.0f}".replace(",", ".")
+        precision = 0 if amount == amount.to_integral_value() else 2
+        number = format(abs(amount), f",.{precision}f").replace(",", "_").replace(".", ",").replace("_", ".")
+        return f"{sign}Rp{number}"
     except (InvalidOperation, TypeError, ValueError):
         return "—"
 

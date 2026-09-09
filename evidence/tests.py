@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -10,6 +11,8 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from PIL import Image
+from pypdf import PdfWriter
 
 from core.models import AuditEvent, Membership, Organization
 from finance.models import Bill, Invoice, Party, Product
@@ -18,7 +21,26 @@ from .models import Attachment, MAX_UPLOAD_BYTES
 from .services import attach_document
 
 
-PDF = b"%PDF-1.7\nLocal test evidence\n%%EOF"
+def pdf_bytes(*, title="Evidence", javascript=False, encrypted=False):
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    writer.add_metadata({"/Title": title})
+    if javascript:
+        writer.add_js("app.alert('test')")
+    if encrypted:
+        writer.encrypt("synthetic-only")
+    stream = BytesIO()
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def image_bytes(format):
+    stream = BytesIO()
+    Image.new("RGB", (10, 10), "white").save(stream, format=format)
+    return stream.getvalue()
+
+
+PDF = pdf_bytes()
 DAY = date(2026, 5, 4)
 
 
@@ -96,8 +118,8 @@ class PrivateEvidenceTests(TestCase):
 
     def test_allowed_images_are_detected_from_bytes_instead_of_browser_mime(self):
         for name, data, content_type in [
-            ("receipt.PNG", b"\x89PNG\r\n\x1a\nfixture", "image/png"),
-            ("receipt.jpeg", b"\xff\xd8\xfffixture", "image/jpeg"),
+            ("receipt.PNG", image_bytes("PNG"), "image/png"),
+            ("receipt.jpeg", image_bytes("JPEG"), "image/jpeg"),
         ]:
             with self.subTest(name=name):
                 attached = self.attach(upload=SimpleUploadedFile(name, data, content_type="text/html"))
@@ -119,7 +141,7 @@ class PrivateEvidenceTests(TestCase):
         original_path = Path(original.file.path)
         with patch("evidence.services.record", side_effect=IntegrityError("simulated audit failure")):
             with self.assertRaises(IntegrityError):
-                self.attach(upload=SimpleUploadedFile("new.pdf", PDF + b"new bytes"))
+                self.attach(upload=SimpleUploadedFile("new.pdf", pdf_bytes(title="Different evidence")))
         self.assertEqual(Attachment.objects.count(), 1)
         self.assertEqual(self.files(), [original_path])
         self.assertEqual(original_path.read_bytes(), PDF)
@@ -136,7 +158,6 @@ class PrivateEvidenceTests(TestCase):
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(b"".join(response.streaming_content), PDF)
-        response.close()
         self.client.force_login(self.foreign_user)
         self.assertEqual(self.client.get(url).status_code, 404)
 
@@ -161,3 +182,24 @@ class PrivateEvidenceTests(TestCase):
         with self.assertRaises(ValidationError):
             attached.delete()
         self.assertEqual(set(AttachmentForm.base_fields), {"file"})
+
+    def test_deactivated_actor_is_rejected_even_when_passed_a_stale_user_instance(self):
+        get_user_model().objects.filter(pk=self.owner.pk).update(is_active=False)
+        self.assertTrue(self.owner.is_active)
+        with self.assertRaises(PermissionDenied):
+            self.attach()
+        self.assertEqual(self.files(), [])
+
+    def test_spoofed_corrupt_active_and_encrypted_documents_are_rejected(self):
+        cases = [("fake.pdf", b"%PDF-not-a-document"),
+                 ("active.pdf", pdf_bytes(javascript=True)),
+                 ("secret.pdf", pdf_bytes(encrypted=True)),
+                 ("truncated.pdf", PDF[:100]),
+                 ("fake.png", b"\x89PNG\r\n\x1a\nfixture"),
+                 ("fake.jpg", b"\xff\xd8\xfffixture"),
+                 ("truncated.jpg", image_bytes("JPEG")[:-30])]
+        for name, data in cases:
+            with self.subTest(name=name), self.assertRaises(ValidationError):
+                self.attach(upload=SimpleUploadedFile(name, data))
+        self.assertFalse(Attachment.objects.exists())
+        self.assertEqual(self.files(), [])

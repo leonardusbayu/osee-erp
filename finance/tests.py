@@ -246,6 +246,7 @@ class FinanceInvariantTests(TestCase):
                                date=DAY, service_date=DAY, number=number)
             bill = approve_bill(organization=self.org, bill=bill)
             bill.tax_status, bill.tax_amount = "reviewed", D("0")
+            bill._tax_service_transition = True  # Synthetic reviewed decision fixture.
             bill.save()
             reconcile_bill_payment(organization=self.org, bill=bill, transaction=negative, amount="100000")
         settled = self.bank("1", "SETTLED")
@@ -275,10 +276,12 @@ class FinanceInvariantTests(TestCase):
             reconcile_bill_payment(organization=self.org, bill=bill, transaction=bank, amount="100000")
         bill.tax_status = "reviewed"
         bill.tax_amount = D("2000")
+        bill._tax_service_transition = True  # Synthetic reviewed decision fixture.
         bill.save()
         with self.assertRaises(ValidationError):
             reconcile_bill_payment(organization=self.org, bill=bill, transaction=bank, amount="100000")
         bill.tax_amount = D("0")
+        bill._tax_service_transition = True  # Synthetic alternative decision fixture.
         bill.save()
         payment = reconcile_bill_payment(organization=self.org, bill=bill, transaction=bank, amount="100000")
         replay = reconcile_bill_payment(organization=self.org, bill=bill, transaction=bank, amount="100000")

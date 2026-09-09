@@ -192,11 +192,35 @@ class TeamRoleHTTPTests(TestCase):
                 approve_tax_profile(self.profile, user, regime=TaxProfile.Regime.NORMAL,
                                     effective_from=date(2026, 1, 1), review_note="Attempted implied tax authority")
             self.assert_profile_pending()
-        # Existing specialist access is preserved; the three-role UI does not migrate it.
+        # Legacy specialist access also requires a subject-bound professional report.
+        import io
+        from pypdf import PdfWriter
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.core.exceptions import ValidationError
+        from taxes import workflow as work
+
+        with self.assertRaises(ValidationError):
+            approve_tax_profile(self.profile, self.reviewer, regime=TaxProfile.Regime.NORMAL,
+                                effective_from=date(2026, 1, 1), review_note="Unchecked legacy role")
+        self.assert_profile_pending()
+        self.profile.taxpayer_reference = "1234567890123456"
+        self.profile.save(update_fields=["taxpayer_reference"])
+        output = io.BytesIO()
+        pdf = PdfWriter()
+        pdf.add_blank_page(width=100, height=100)
+        pdf.write(output)
+        evidence = work.upload_evidence(organization=self.org, actor=self.reviewer,
+            file=SimpleUploadedFile("synthetic-review.pdf", output.getvalue()))
+        review = work.record_external_review(organization=self.org, actor=self.reviewer, subject=self.profile,
+            decision=work.profile_decision(regime="normal", effective_from=date(2026, 1, 1)), evidence=evidence,
+            professional_name="Synthetic professional", qualification_reference="Synthetic engagement",
+            reviewed_on=date(2026, 9, 9), statement="Synthetic report confirms this profile decision", report_confirmed=True)
         approved = approve_tax_profile(self.profile, self.reviewer, regime=TaxProfile.Regime.NORMAL,
-                                       effective_from=date(2026, 1, 1), review_note="Synthetic documented tax review")
+                                       effective_from=date(2026, 1, 1), review_note="Synthetic documented tax review",
+                                       external_review=review)
         self.assertEqual(approved.reviewed_by, self.reviewer)
         self.assertEqual(approved.regime, TaxProfile.Regime.NORMAL)
+        self.assertEqual(approved.external_review, review)
 
     def test_owner_tax_evidence_form_cannot_forge_approval_after_role_simplification(self):
         response = self.client.post(reverse("tax_profile_setup"), {

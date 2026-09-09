@@ -34,10 +34,10 @@ class TaxSafetyTests(TestCase):
         for user, role in [(cls.owner, "owner"), (cls.finance, "finance"), (cls.reviewer, "reviewer"), (cls.auditor, "auditor")]:
             Membership.objects.create(user=user, organization=cls.org, role=role)
         Membership.objects.create(user=cls.outsider, organization=cls.other_org, role="owner")
-        seed_tax_sources()
+        seed_tax_sources(reviewed_by="Synthetic knowledge reviewer", review_reference="Synthetic source review fixture")
 
     def setUp(self):
-        clock = patch("taxes.chat.timezone.localdate", return_value=date(2026, 9, 7))
+        clock = patch("taxes.chat.timezone.localdate", return_value=date(2026, 9, 9))
         clock.start()
         self.addCleanup(clock.stop)
         self.client.force_login(self.owner)
@@ -177,8 +177,9 @@ class TaxSafetyTests(TestCase):
         bill = approve_bill(organization=self.org, bill=bill, actor=self.owner)
         bill.tax_status = "reviewed"
         bill.tax_amount = Decimal("1000")
+        bill._tax_service_transition = True  # Synthetic legacy state; application writes use review_bill_tax.
         bill.save()
-        self.assertIn("belum didukung", monthly_tax_context(self.org, "2026-05")["tax_candidates"][0]["reason"])
+        self.assertIn("belum ditautkan", monthly_tax_context(self.org, "2026-05")["tax_candidates"][0]["reason"])
 
     def test_annual_uses_posted_commercial_books_and_fiscal_year_without_tax_base(self):
         from finance.models import AccountingPeriod, Journal, JournalLine

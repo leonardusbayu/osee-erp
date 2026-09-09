@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 from decimal import Decimal
 import tempfile
+import io
+from pypdf import PdfWriter
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, Client, override_settings
@@ -9,6 +11,13 @@ from django.utils import timezone
 from core.models import Organization, Membership
 from finance.models import Party, Product, Invoice, BankAccount, BankTransaction, Journal
 from finance import services
+
+def valid_pdf():
+    output = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    writer.write(output)
+    return output.getvalue()
 
 class FinanceWebTests(TestCase):
     def setUp(self):
@@ -81,11 +90,14 @@ class FinanceWebTests(TestCase):
         self.assertEqual(invoice.status, "draft")
 
     def test_csv_import_repeated_upload_is_idempotent(self):
+        from webapp.models import StatementImport
         content = f"date,reference,description,amount\n{timezone.localdate()},TEST-REF,Example,100000\n".encode()
-        for _ in range(2):
-            uploaded = SimpleUploadedFile("bank.csv", content, content_type="text/csv")
-            self.assertEqual(self.client.post(reverse("bank_import"), {"account": self.account.pk, "file": uploaded}).status_code, 302)
-        self.assertEqual(BankTransaction.objects.count(), 1)
+        with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
+            for _ in range(2):
+                uploaded = SimpleUploadedFile("bank.csv", content, content_type="text/csv")
+                self.assertEqual(self.client.post(reverse("bank_import"), {"account": self.account.pk, "file": uploaded}).status_code, 302)
+            self.assertEqual(StatementImport.objects.count(), 1)
+            self.assertFalse(BankTransaction.objects.exists(), "Upload requires explicit preview and confirmation")
 
     def test_tax_evidence_input_cannot_set_regime_or_reviewer(self):
         self.client.post(reverse("tax_profile_setup"), {"registration_date": "2024-01-01", "registration_evidence": "SKT reference", "regime": "final", "reviewed_by": self.user.pk})
@@ -110,7 +122,12 @@ class FinanceWebTests(TestCase):
         invalid = {"party": self.party.pk, "product": self.product.pk, "quantity": 1, "date": "1999-12-31", "due_date": "1999-12-31", "service_date": "1999-12-31"}
         self.assertEqual(self.client.post(reverse("sale_create"), invalid).status_code, 200)
         upload = SimpleUploadedFile("dates.csv", b"date,reference,description,amount\n1999-12-31,OLD,Old date,1\n")
-        self.assertEqual(self.client.post(reverse("bank_import"), {"account": self.account.pk, "file": upload}).status_code, 200)
+        with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
+            self.assertEqual(self.client.post(reverse("bank_import"), {"account": self.account.pk, "file": upload}).status_code, 302)
+            from webapp.models import StatementImport
+            staged = StatementImport.objects.get()
+            response = self.client.post(reverse("statement_preview", args=[staged.pk]), {"date": "0", "reference": "1", "description": "2", "amount": "3", "number_format": "en", "reference_mode": "bank_reference", "first_row": 1, "last_row": 1})
+            self.assertContains(response, "Tanggal harus lengkap")
         self.assertFalse(BankTransaction.objects.exists())
         self.assertEqual(self.client.get(reverse("dashboard") + "?period=2000-01").status_code, 200)
         response = self.client.post(reverse("price_create"), {"party": self.party.pk, "product": self.product.pk, "kind": "selling", "amount": "500000", "effective_from": "9999-12-31"})
@@ -154,7 +171,7 @@ class FinanceWebTests(TestCase):
         from evidence.models import Attachment
         invoice = services.create_invoice(organization=self.org, party=self.party, product=self.product, quantity=1, date=timezone.localdate())
         route = reverse("sale_attachment", args=[invoice.pk])
-        content = b"%PDF-1.7\nSynthetic test evidence\n%%EOF"
+        content = valid_pdf()
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
             for _ in range(2):
                 response = self.client.post(route, {"file": SimpleUploadedFile("proof.pdf", content, content_type="application/pdf")})
@@ -163,7 +180,6 @@ class FinanceWebTests(TestCase):
             attachment = Attachment.objects.get()
             download = self.client.get(reverse("evidence:download", args=[attachment.pk]))
             self.assertEqual(b"".join(download.streaming_content), content)
-            download.close()
             self.assertEqual(self.client.get(route).status_code, 405)
             secure = Client(enforce_csrf_checks=True)
             secure.force_login(self.user)
@@ -181,7 +197,7 @@ class FinanceWebTests(TestCase):
         bill = services.create_bill(organization=self.org, supplier=supplier, amount=Decimal("450000"), date=timezone.localdate(), service_date=timezone.localdate(), number="BILL-TEST", actor=self.user)
         self.assertContains(self.client.get(reverse("bill_detail", args=[bill.pk])), "Nilai pajak belum ditentukan")
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
-            response = self.client.post(reverse("bill_attachment", args=[bill.pk]), {"file": SimpleUploadedFile("bill.pdf", b"%PDF-1.7\ntest"), "organization": self.other.pk, "invoice": 99999})
+            response = self.client.post(reverse("bill_attachment", args=[bill.pk]), {"file": SimpleUploadedFile("bill.pdf", valid_pdf()), "organization": self.other.pk, "invoice": 99999})
             self.assertRedirects(response, reverse("bill_detail", args=[bill.pk]))
             attached = bill.attachments.get()
             self.assertEqual(attached.organization_id, self.org.pk)

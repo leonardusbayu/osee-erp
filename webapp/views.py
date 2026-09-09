@@ -23,10 +23,10 @@ from django.views.decorators.http import require_POST
 
 from core.access import organization_required, require_role
 from core.audit import record
-from core.models import Organization, Membership, AuditEvent, DomainEvent
+from core.models import Organization, Membership, AuditEvent, DomainEvent, AccountSecurity
 from core.modules import MODULES
 from core.numbering import next_number
-from core.throttle import allow_attempt
+from core.throttle import allow_attempt, allow_login_attempt, reset_login_attempts
 from core.workspaces import real_import_exists, pending_company
 from finance.models import Party, Product, PriceVersion, Invoice, Bill, BankAccount, BankTransaction, Allocation, JournalLine
 from finance import services
@@ -61,10 +61,27 @@ class FinanceLoginView(LoginView):
         return context
 
     def post(self, request, *args, **kwargs):
-        identity = f"login:{request.META.get('REMOTE_ADDR', '')}"
-        if not allow_attempt(identity):
+        if not allow_login_attempt(username=request.POST.get("username", ""), remote_addr=request.META.get("REMOTE_ADDR", "")):
             return HttpResponse("Terlalu banyak percobaan masuk. Coba lagi dalam 15 menit.", status=429)
         return super().post(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        import time
+        user = form.get_user()
+        member = Membership.objects.filter(user=user).first()
+        if not member:
+            form.add_error(None, "Akun ini tidak memiliki akses perusahaan yang aktif. Hubungi Owner/Direktur.")
+            return self.form_invalid(form)
+        reset_login_attempts(username=user.get_username(), remote_addr=self.request.META.get("REMOTE_ADDR", ""))
+        security = AccountSecurity.objects.filter(user=user).first()
+        if security and security.totp_enabled:
+            destination = self.get_redirect_url() or reverse("director:overview" if member.role in {"owner", "director"} else "marketing:overview" if member.role == "marketing" else "dashboard")
+            self.request.session.cycle_key()
+            self.request.session["pending_login"] = {"user_id": user.pk, "at": time.time(), "auth_hash": user.get_session_auth_hash(), "next": destination}
+            return redirect("mfa_challenge")
+        response = super().form_valid(form)
+        self.request.session["auth_security_version"] = security.session_version if security else 1
+        return response
 
 @require_POST
 def demo_login(request):
@@ -326,6 +343,7 @@ def bill_approve(request, pk):
 
 @organization_required
 def bank(request):
+    from .models import StatementImport
     org = request.organization
     all_lines = BankTransaction.objects.filter(organization=org).select_related("account").order_by("-date", "-pk")
     pending = services.pending_bank_transactions(organization=org)
@@ -338,7 +356,7 @@ def bank(request):
         line.can_match_bill = line.amount < ZERO and line.unallocated_amount != ZERO and request.membership.role in {"owner", "finance"}
     invoices = [i for i in Invoice.objects.filter(organization=org, status__in=["issued", "delivered"]).select_related("party") if i.outstanding_amount > ZERO]
     open_bills = [bill for bill in Bill.objects.filter(organization=org, status="approved", tax_status="reviewed", tax_amount=0).select_related("supplier") if bill.outstanding_amount > ZERO]
-    return render(request, "app/bank.html", {"transactions": lines, "page_obj": page, "selected_status": request.GET.get("status", ""), "accounts": BankAccount.objects.filter(organization=org), "unmatched_count": pending.count(), "open_invoices": invoices, "open_bills": open_bills, "active_nav": "bank", "can_write": request.membership.role in {"owner", "finance"}, "bank_balance": BankTransaction.objects.filter(organization=org).aggregate(total=Sum("amount"))["total"] or ZERO})
+    return render(request, "app/bank.html", {"statements": StatementImport.objects.filter(organization=org).select_related("account").order_by("-created_at")[:20], "transactions": lines, "page_obj": page, "selected_status": request.GET.get("status", ""), "accounts": BankAccount.objects.filter(organization=org), "unmatched_count": pending.count(), "open_invoices": invoices, "open_bills": open_bills, "active_nav": "bank", "can_write": request.membership.role in {"owner", "finance"}, "bank_balance": BankTransaction.objects.filter(organization=org).aggregate(total=Sum("amount"))["total"] or ZERO})
 
 @organization_required
 def bank_import(request):
@@ -582,7 +600,7 @@ def settings_view(request):
             return redirect("settings")
     from taxes.models import TaxProfile
     profile = TaxProfile.objects.filter(organization=request.organization).first()
-    return render(request, "app/settings.html", {"form": form, "profile": profile, "members": Membership.objects.filter(organization=request.organization).select_related("user"), "audit_events": AuditEvent.objects.filter(organization=request.organization).select_related("actor")[:15], "openrouter_configured": bool(django_settings.OPENROUTER_API_KEY and django_settings.OPENROUTER_MODEL and django_settings.OPENROUTER_PROVIDER), "active_nav": "settings", "can_write": request.membership.role == "owner"})
+    return render(request, "app/settings.html", {"form": form, "profile": profile, "members": Membership.all_objects.filter(organization=request.organization).select_related("user"), "audit_events": AuditEvent.objects.filter(organization=request.organization).select_related("actor")[:15], "openrouter_configured": bool(django_settings.OPENROUTER_API_KEY and django_settings.OPENROUTER_MODEL and django_settings.OPENROUTER_PROVIDER), "active_nav": "settings", "can_write": request.membership.role == "owner"})
 
 @organization_required
 def member_create(request):
@@ -601,36 +619,41 @@ def member_create(request):
 def password_change(request):
     if request.organization.is_demo:
         messages.info(request, "Akun demo tidak memakai kata sandi. Buat workspace perusahaan untuk akun pribadi.")
-        return redirect("settings")
+        return redirect("modules")
     form = PasswordChangeForm(request.user, request.POST or None)
     if request.method == "POST" and form.is_valid():
         user = form.save()
         update_session_auth_hash(request, user)
+        AccountSecurity.objects.filter(user=user).update(require_password_change=False)
         record(request.organization, request.user, "account.password_changed")
         messages.success(request, "Kata sandi diperbarui.")
-        return redirect("director:marketing" if request.membership.role == "marketing" else "settings")
-    return _form_page(request, form, "Ganti kata sandi", "Gunakan kata sandi unik setidaknya 12 karakter.", "settings", "settings", "Perbarui kata sandi")
+        return redirect("marketing:overview" if request.membership.role == "marketing" else "settings")
+    return _form_page(request, form, "Ganti kata sandi", "Gunakan kata sandi unik setidaknya 12 karakter. Jika akun baru dipulihkan, Anda wajib mengganti sandi sementara.", "modules" if request.membership.role == "marketing" else "settings", "settings", "Perbarui kata sandi")
 
 @organization_required
 def tax_profile_setup(request):
     require_role(request, "owner", "finance")
     from taxes.models import TaxProfile
-    profile, _ = TaxProfile.objects.get_or_create(organization=request.organization)
+    profile = TaxProfile.objects.filter(organization=request.organization).first() or TaxProfile(organization=request.organization)
     initial = {key: getattr(profile, key) for key in RegistrationEvidenceForm.base_fields}
     form = RegistrationEvidenceForm(request.POST or None, initial=initial)
     if request.method == "POST" and form.is_valid():
-        if profile.reviewed_at:
-            form.add_error(None, "Profil sudah diperiksa. Perubahan harus melalui peninjau pajak agar riwayat tidak tertimpa.")
-        else:
-            for key, value in form.cleaned_data.items():
-                setattr(profile, key, value)
-            try:
+        try:
+            with transaction.atomic():
+                Organization.objects.select_for_update().get(pk=request.organization.pk)
+                if not Membership.objects.filter(organization=request.organization, user=request.user, user__is_active=True, role__in=["owner", "finance"]).exists():
+                    raise PermissionDenied
+                profile = TaxProfile.objects.select_for_update().filter(organization=request.organization).first() or TaxProfile(organization=request.organization)
+                if profile.reviewed_at:
+                    raise ValidationError("Profil sudah diperiksa. Perubahan harus melalui peninjau pajak agar riwayat tidak tertimpa.")
+                for key, value in form.cleaned_data.items():
+                    setattr(profile, key, value)
                 profile.save()
                 record(request.organization, request.user, "tax.profile.evidence_updated", obj=profile)
-                messages.success(request, "Informasi pendukung tersimpan. Tarif tetap menunggu pemeriksaan pajak.")
-                return redirect("tax_workspace")
-            except ValidationError as exc:
-                _form_error(form, exc)
+            messages.success(request, "Informasi pendukung tersimpan. Tarif tetap menunggu pemeriksaan pajak.")
+            return redirect("tax_workspace")
+        except ValidationError as exc:
+            _form_error(form, exc)
     return _form_page(request, form, "Lengkapi informasi pajak", "Masukkan fakta dari dokumen yang Anda miliki. Penetapan aturan pajak dilakukan oleh peninjau yang berwenang.", "tax_workspace", "tax")
 
 @organization_required

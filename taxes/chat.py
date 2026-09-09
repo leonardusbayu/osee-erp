@@ -73,9 +73,8 @@ def classify_topic(question, previous_topic=None):
 
 
 def approved_sources(topic):
-    today = timezone.localdate()
-    sources = list(TaxSource.objects.filter(approved=True))
-    return [source for source in sources if topic in source.topics and 0 <= (today - source.reviewed_on).days <= 180 and (not source.effective_from or source.effective_from <= today) and (not source.effective_until or today <= source.effective_until)]
+    from .knowledge import current_sources
+    return current_sources(topic=topic)
 
 
 def local_answer(organization, question, previous_topic=None):
@@ -89,7 +88,7 @@ def local_answer(organization, question, previous_topic=None):
         "nonpkp": "Untuk penjualan domestik biasa saat berstatus non-PKP, perusahaan membuat invoice komersial tanpa memungut PPN keluaran atau menerbitkan Faktur Pajak. PPN pada tagihan pemasok tidak otomatis dapat dikreditkan; pencatatannya mengikuti biaya, pembayaran di muka, atau aset terkait dan pemeriksaan fiskal. Non-PKP tidak menghapus kewajiban PPh 23 atau SPT badan. Transaksi luar negeri dan status pada tanggal transaksi perlu diperiksa terpisah.",
         "invoice": "Tagihan pemasok yang menampilkan PPN tidak membuktikan bahwa OSEE boleh mengkreditkannya atau bahwa PPh 23 pasti berlaku. Harga historis dan istilah 'setelah pajak' tidak menetapkan tarif atau biaya untuk pesanan baru. Cocokkan invoice, tanggal layanan, rincian harga, Faktur Pajak bila relevan, dan bukti pembayaran. Proforma maupun rekap penjualan belum menjadi bukti pembayaran atau pelaporan pajak.",
         "deadline": "Aturan umum untuk PPh masa terkait adalah pembayaran tanggal 15 dan pelaporan tanggal 20 bulan berikutnya. Batas umum SPT Tahunan badan adalah empat bulan setelah akhir tahun buku. Jenis kewajiban, hari libur, dan kebijakan khusus masa bisa memengaruhi tanggal yang berlaku. Tanggal pada kertas kerja masih perlu kalender yang diverifikasi pemeriksa.",
-        "payment": "Mutasi bank membuktikan pergerakan uang, belum otomatis membuktikan pajak telah dibayar atau SPT telah diterima. Pembayaran pajak memerlukan bukti resmi seperti BPN/NTPN atau alokasi deposit yang diverifikasi; pelaporan memerlukan bukti penerimaan resmi seperti BPE. ERP menampilkan persetujuan kertas kerja, pembayaran, dan pelaporan sebagai status berbeda. Draf CSV bukan bukti pelaporan.",
+        "payment": "Mutasi bank membuktikan pergerakan uang, belum otomatis membuktikan pajak telah dibayar atau SPT diterima. Cocokkan bukti resmi seperti BPN/NTPN atau alokasi deposit. Untuk PPh final omzet yang memenuhi syarat dan disetor sendiri, pembayaran tervalidasi memenuhi pelaporan masa sesuai PMK 81 Pasal 171(4). PPh 23 dan SPT Tahunan mengikuti bukti pelaporan yang sesuai. Draf CSV bukan bukti pelaporan.",
         "annual": "Mulai dari buku yang ditutup dan bank yang direkonsiliasi, lalu cocokkan pendapatan, uang muka reseller, biaya, aset, utang, dan bukti potong. Pemeriksa pajak menilai koreksi fiskal serta aturan yang berlaku sepanjang tahun buku. ERP menyiapkan daftar kebutuhan dan kertas kerja; ringkasan ini belum merupakan SPT resmi. Simpan bukti penerimaan setelah pelaporan selesai melalui saluran DJP yang disetujui.",
         "tutor": "Pembayaran kepada tutor orang pribadi tidak otomatis menggunakan PPh 23. Hubungan kerja atau jasa, identitas penerima, dan status domisili perlu diperiksa untuk jalur PPh 21 atau PPh 26 yang sesuai. Staf keuangan cukup mengumpulkan kontrak dan dokumen penerima; pemeriksa menetapkan perlakuannya.",
         "documents": "Siapkan dokumen pendaftaran pajak, bukti status dan tanggal berlaku PKP/non-PKP, serta riwayat aturan dan pelaporan perusahaan. Untuk transaksi, kumpulkan kontrak, invoice, bukti layanan, mutasi bank, dan bukti pajak terkait. Catat dokumen yang belum tersedia di profil pajak. Pemeriksa pajak yang ditunjuk akan menentukan aturan; pemilik dan staf tidak perlu menebak pasal atau tarif.",

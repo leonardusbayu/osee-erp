@@ -16,6 +16,9 @@ class TaxValidatedQuerySet(models.QuerySet):
     def bulk_update(self, *args, **kwargs):
         raise ValidationError("Gunakan layanan pemeriksaan pajak untuk mengubah catatan.")
 
+    def delete(self):
+        raise ValidationError("Catatan audit pajak tidak boleh dihapus massal.")
+
 
 class ValidatedModel(models.Model):
     """Validate normal application writes; bulk writes are not public interfaces."""
@@ -43,6 +46,7 @@ class TaxProfile(ValidatedModel):
     organization = models.OneToOneField("core.Organization", on_delete=models.CASCADE, related_name="tax_profile")
     registration_date = models.DateField(null=True, blank=True)
     registration_evidence = models.CharField(max_length=300, blank=True)
+    taxpayer_reference = models.CharField(max_length=100, blank=True)
     vat_status_evidence = models.CharField(max_length=300, blank=True)
     vat_status_effective_from = models.DateField(null=True, blank=True)
     regime = models.CharField(max_length=12, choices=Regime.choices, default=Regime.UNDECIDED)
@@ -54,9 +58,14 @@ class TaxProfile(ValidatedModel):
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="reviewed_tax_profiles")
     reviewed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+    external_review = models.ForeignKey("ExternalTaxReview", null=True, blank=True, on_delete=models.PROTECT, related_name="profiles")
 
     def clean(self):
         super().clean()
+        old = type(self).objects.filter(pk=self.pk).first() if self.pk else None
+        if old and old.reviewed_at and not getattr(self, "_tax_write", False):
+            if any(getattr(old, field.attname) != getattr(self, field.attname) for field in self._meta.fields if field.name != "updated_at"):
+                raise ValidationError("Profil yang ditinjau hanya dapat direvisi melalui alur pemeriksaan terdokumentasi.")
         if self.regime == self.Regime.UNDECIDED:
             return
         if self.pk:
@@ -85,8 +94,18 @@ class TaxProfile(ValidatedModel):
             errors["effective_from"] = "Tanggal aktivasi harus berada dalam masa fasilitas yang telah diperiksa."
         if self.reviewed_by_id and self.organization_id:
             from core.models import Membership
-            if not Membership.objects.filter(user_id=self.reviewed_by_id, organization_id=self.organization_id, role="reviewer").exists():
+            if not Membership.objects.filter(user_id=self.reviewed_by_id, organization_id=self.organization_id, user__is_active=True, role__in=["owner", "reviewer"]).exists():
                 errors["reviewed_by"] = "Persetujuan membutuhkan pemeriksa pajak organisasi ini."
+        if not getattr(self, "_tax_write", False):
+            errors["regime"] = "Gunakan alur pencatatan pemeriksaan profesional sebelum mengaktifkan aturan."
+        if not self.external_review_id:
+            errors["external_review"] = "Laporan pemeriksaan profesional wajib ditautkan."
+        if self.regime == self.Regime.FINAL:
+            from .rules import validate_final_profile
+            try:
+                validate_final_profile(self)
+            except ValidationError as exc:
+                errors["regime"] = exc.messages
         if errors:
             raise ValidationError(errors)
 
@@ -132,6 +151,14 @@ class TaxObligation(ValidatedModel):
     filing_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    source_bill = models.ForeignKey("finance.Bill", null=True, blank=True, on_delete=models.PROTECT, related_name="tax_obligations")
+    external_review = models.ForeignKey("ExternalTaxReview", null=True, blank=True, on_delete=models.PROTECT, related_name="obligations")
+    rule_code = models.CharField(max_length=50, blank=True)
+    calculation_version = models.CharField(max_length=60, blank=True)
+    object_code = models.CharField(max_length=40, blank=True)
+    source_evidence = models.ForeignKey("TaxEvidence", null=True, blank=True, on_delete=models.PROTECT, related_name="obligations")
+    prepared_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="prepared_tax_obligations")
+    reporting_method = models.CharField(max_length=24, choices=[("return_receipt", "Bukti penerimaan SPT"), ("validated_self_payment", "Pelaporan melalui pembayaran final tervalidasi")], default="return_receipt")
 
     class Meta:
         ordering = ["period", "tax_type", "direction", "pk"]
@@ -146,17 +173,21 @@ class TaxObligation(ValidatedModel):
     def payment_status(self):
         if self.direction == self.Direction.RECEIVABLE:
             return "Tidak disetor oleh OSEE"
-        return "Bukti pembayaran diverifikasi" if self.payment_reference and self.payment_verified_at else "Pembayaran belum diverifikasi"
+        return "Bukti pembayaran diverifikasi" if self.pk and self.verifications.filter(kind="payment").exists() else "Pembayaran belum diverifikasi"
 
     @property
     def filing_status(self):
-        return "Bukti pelaporan diverifikasi" if self.filing_reference and self.filing_verified_at else "Pelaporan belum diverifikasi"
+        if self.pk and self.reporting_method == "validated_self_payment" and self.verifications.filter(kind="payment").exists():
+            return "Pelaporan melalui pembayaran tervalidasi — PMK 81 Pasal 171(4)"
+        return "Bukti pelaporan diverifikasi" if self.pk and self.verifications.filter(kind="filing").exists() else "Pelaporan belum diverifikasi"
 
     def clean(self):
         super().clean()
         errors = {}
         if self.pk:
             old = type(self).objects.filter(pk=self.pk).first()
+            if old and old.status == self.Status.APPROVED and any(getattr(old, field.attname) != getattr(self, field.attname) for field in self._meta.fields if field.name not in ("updated_at",)):
+                raise ValidationError("Kertas kerja disetujui bersifat tetap; bukti penyelesaian dicatat terpisah.")
             inputs = ("period", "tax_type", "direction", "base", "rate", "amount", "source_reference", "rule_reference")
             if old and old.status == self.Status.APPROVED and self.status == self.Status.APPROVED and old.reviewed_at == self.reviewed_at and any(getattr(old, field) != getattr(self, field) for field in inputs):
                 errors["status"] = "Perubahan kertas kerja yang disetujui memerlukan pemeriksaan ulang."
@@ -168,26 +199,190 @@ class TaxObligation(ValidatedModel):
                 errors[field] = "Nilai tidak boleh negatif."
         if self.rate is not None and not 0 <= self.rate <= 1:
             errors["rate"] = "Tarif harus berupa pecahan antara 0 dan 1."
+        if self.source_bill_id and self.source_bill.organization_id != self.organization_id:
+            errors["source_bill"] = "Tagihan tidak sesuai perusahaan."
+        if self.source_evidence_id and self.source_evidence.organization_id != self.organization_id:
+            errors["source_evidence"] = "Dokumen tidak sesuai perusahaan."
+        if self.payment_reference or self.filing_reference or self.payment_verified_at or self.filing_verified_at:
+            errors["status"] = "Catat verifikasi melalui layanan bukti resmi; kolom referensi lama tidak mengesahkan pembayaran/pelaporan."
         for prefix in ("payment", "filing"):
             if bool(getattr(self, f"{prefix}_reference").strip()) != bool(getattr(self, f"{prefix}_verified_at")):
                 errors[f"{prefix}_reference"] = "Referensi resmi dan waktu verifikasi harus dilengkapi bersama."
         if self.direction == self.Direction.RECEIVABLE and self.payment_reference:
             errors["payment_reference"] = "Potongan oleh pelanggan bukan pembayaran pajak keluar OSEE."
         if self.status == self.Status.APPROVED:
+            if not self.source_evidence_id or not self.object_code or not self.rule_code:
+                errors["status"] = "Dokumen sumber, kode objek yang diperiksa, dan versi aturan wajib tersedia."
             if any(value is None for value in (self.base, self.rate, self.amount)) or not self.source_reference.strip() or not self.rule_reference.strip() or not self.reviewed_by_id or not self.reviewed_at:
                 errors["status"] = "Dasar, tarif, nominal, bukti, aturan, dan pemeriksa wajib tersedia."
             elif self.organization_id:
                 from core.models import Membership
-                if not Membership.objects.filter(user_id=self.reviewed_by_id, organization_id=self.organization_id, role="reviewer").exists():
+                if not Membership.objects.filter(user_id=self.reviewed_by_id, organization_id=self.organization_id, role__in=["owner", "reviewer"], user__is_active=True).exists():
                     errors["reviewed_by"] = "Pemeriksa harus memiliki akses pemeriksa pada organisasi ini."
+            if not getattr(self, "_tax_write", False) or not self.external_review_id:
+                errors["status"] = "Persetujuan memerlukan layanan dan laporan pemeriksaan profesional."
+            from .rules import calculate_tax, validate_monthly_period
+            try:
+                validate_monthly_period(self.period)
+                result = calculate_tax(self.rule_code, self.base)
+                if self.base != result["base"] or self.amount != result["amount"] or self.rate != result["rate"] or self.calculation_version != result["version"]:
+                    errors["amount"] = "Nominal/tarif tidak sama dengan hasil perhitungan tervalidasi."
+                expected_type = "final_turnover" if self.rule_code == "final_turnover_005" else "pph23"
+                expected_method = "validated_self_payment" if expected_type == "final_turnover" else "return_receipt"
+                valid_direction = self.direction == "own_tax" if expected_type == "final_turnover" else self.direction in ("payable", "receivable")
+                if self.rule_code == "no_withholding" or self.tax_type != expected_type or self.reporting_method != expected_method or not valid_direction:
+                    errors["status"] = "Jenis, arah, dan metode pelaporan harus sesuai klasifikasi perhitungan yang didukung."
+            except ValidationError as exc:
+                errors["amount"] = exc.messages
             if self.tax_type == self.TaxType.FINAL and self.organization_id:
-                profile = TaxProfile.objects.filter(organization_id=self.organization_id).first()
-                if not profile or profile.regime != TaxProfile.Regime.FINAL or not profile.reviewed_at or not profile.effective_from or self.period < profile.effective_from or not profile.final_regime_start_date or self.period < profile.final_regime_start_date or not profile.final_regime_end_date or self.period > profile.final_regime_end_date:
+                from .services import profile_gates
+                profile, gates = profile_gates(self.organization, self.period)
+                if gates or not profile or profile.regime != TaxProfile.Regime.FINAL or not profile.reviewed_at or not profile.effective_from or self.period < profile.effective_from or not profile.final_regime_start_date or self.period < profile.final_regime_start_date or not profile.final_regime_end_date or self.period > profile.final_regime_end_date:
                     errors["status"] = "PPh final tidak dapat disetujui sebelum kelayakan masa ini ditinjau."
         if (self.payment_reference or self.filing_reference) and self.status != self.Status.APPROVED:
             errors["status"] = "Kertas kerja harus disetujui sebelum bukti penyelesaian dicatat."
         if errors:
             raise ValidationError(errors)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Kertas kerja pajak tidak dihapus; simpan riwayat pemeriksaannya.")
+
+
+class ImmutableTaxRecord(ValidatedModel):
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError("Bukti/keputusan pajak bersifat tetap; catat versi baru.")
+        if not getattr(self, "_tax_write", False):
+            raise ValidationError("Gunakan layanan pajak yang berwenang.")
+        try:
+            return super().save(*args, **kwargs)
+        finally:
+            self.__dict__.pop("_tax_write", None)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Bukti audit pajak tidak boleh dihapus.")
+
+    def clean(self):
+        super().clean()
+        for field in self._meta.fields:
+            if isinstance(field, models.ForeignKey) and getattr(self, field.attname, None):
+                related = getattr(self, field.name)
+                if hasattr(related, "organization_id") and related.organization_id != self.organization_id:
+                    raise ValidationError({field.name: "Referensi harus berada pada perusahaan yang sama."})
+
+
+class TaxEvidence(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    original_filename = models.CharField(max_length=200)
+    sha256 = models.CharField(max_length=64)
+    content = models.BinaryField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ExternalTaxReview(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    evidence = models.ForeignKey(TaxEvidence, on_delete=models.PROTECT)
+    professional_name = models.CharField(max_length=200)
+    qualification_reference = models.CharField(max_length=300)
+    reviewed_on = models.DateField()
+    statement = models.TextField(max_length=4000)
+    subject_type = models.CharField(max_length=30)
+    subject_id = models.PositiveBigIntegerField()
+    subject_digest = models.CharField(max_length=64)
+    decision = models.JSONField()
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self):
+        if self.evidence_id and self.evidence.organization_id != self.organization_id:
+            raise ValidationError("Dokumen pemeriksaan tidak sesuai perusahaan.")
+
+
+class TaxProfileDecision(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    profile = models.ForeignKey(TaxProfile, on_delete=models.PROTECT, related_name="decisions")
+    external_review = models.OneToOneField(ExternalTaxReview, on_delete=models.PROTECT)
+    effective_from = models.DateField()
+    snapshot = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class BillTaxDecision(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    bill = models.OneToOneField("finance.Bill", on_delete=models.PROTECT, related_name="tax_decision")
+    external_review = models.OneToOneField(ExternalTaxReview, on_delete=models.PROTECT)
+    obligation = models.OneToOneField(TaxObligation, null=True, blank=True, on_delete=models.PROTECT, related_name="bill_decision")
+    rule_code = models.CharField(max_length=50)
+    base = models.DecimalField(max_digits=18, decimal_places=2)
+    rate = models.DecimalField(max_digits=9, decimal_places=6)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    period = models.DateField()
+    reason = models.TextField(max_length=4000)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class TaxVerification(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    obligation = models.ForeignKey(TaxObligation, on_delete=models.PROTECT, related_name="verifications")
+    kind = models.CharField(max_length=12, choices=[("payment", "Pembayaran"), ("filing", "Pelaporan"), ("credit", "Bukti potong pelanggan")])
+    evidence = models.ForeignKey(TaxEvidence, on_delete=models.PROTECT)
+    reference = models.CharField(max_length=200)
+    taxpayer_reference = models.CharField(max_length=100)
+    period = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    obligation_digest = models.CharField(max_length=64)
+    verifier = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    matched_at = models.DateTimeField(auto_now_add=True)
+    note = models.TextField(max_length=4000)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["obligation", "kind"], name="tax_one_verification_kind"), models.UniqueConstraint(fields=["organization", "kind", "reference"], name="tax_unique_verified_reference")]
+
+
+class AnnualTaxWorkpaper(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    year = models.PositiveSmallIntegerField()
+    book_snapshot = models.JSONField()
+    inputs = models.JSONField()
+    result = models.JSONField()
+    prepared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    calculation_version = models.CharField(max_length=60)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class AnnualTaxApproval(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    workpaper = models.OneToOneField(AnnualTaxWorkpaper, on_delete=models.PROTECT, related_name="approval")
+    external_review = models.OneToOneField(ExternalTaxReview, on_delete=models.PROTECT)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class AnnualTaxFiling(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    workpaper = models.OneToOneField(AnnualTaxWorkpaper, on_delete=models.PROTECT, related_name="filing")
+    evidence = models.ForeignKey(TaxEvidence, on_delete=models.PROTECT)
+    reference = models.CharField(max_length=200)
+    taxpayer_reference = models.CharField(max_length=100)
+    year = models.PositiveSmallIntegerField(null=True, blank=True)
+    return_version = models.PositiveSmallIntegerField(default=0)
+    reported_tax = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    reported_balance_due = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["organization", "year", "return_version"], name="tax_annual_receipt_version")]
+
+    def clean(self):
+        super().clean()
+        if self.year is None or self.reported_tax is None or self.reported_balance_due is None:
+            raise ValidationError("Bukti penerimaan memerlukan tahun dan nominal SPT yang dicocokkan; data lama kosong tidak dianggap terverifikasi.")
 
 
 class TaxSource(models.Model):
@@ -205,6 +400,49 @@ class TaxSource(models.Model):
 
     class Meta:
         ordering = ["slug"]
+
+
+class TaxSourceRevision(models.Model):
+    source = models.ForeignKey(TaxSource, on_delete=models.PROTECT, related_name="revisions")
+    snapshot = models.JSONField()
+    content_hash = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    objects = TaxValidatedQuerySet.as_manager()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["source", "content_hash"], name="tax_source_unique_revision")]
+
+    def save(self, *args, **kwargs):
+        if not getattr(self, "_knowledge_write", False) or self.pk:
+            raise ValidationError("Versi sumber bersifat tetap; gunakan publikasi yang telah ditinjau.")
+        self.full_clean()
+        try:
+            return super().save(*args, **kwargs)
+        finally:
+            self.__dict__.pop("_knowledge_write", None)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Versi sumber tidak boleh dihapus.")
+
+
+class TaxSourcePublication(models.Model):
+    revision = models.ForeignKey(TaxSourceRevision, on_delete=models.PROTECT)
+    reviewer_name = models.CharField(max_length=200)
+    review_reference = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+    objects = TaxValidatedQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        if self.pk or not getattr(self, "_knowledge_write", False):
+            raise ValidationError("Publikasi sumber memerlukan pemeriksaan operator yang eksplisit.")
+        self.full_clean()
+        try:
+            return super().save(*args, **kwargs)
+        finally:
+            self.__dict__.pop("_knowledge_write", None)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Riwayat publikasi sumber tidak dihapus.")
 
 
 class ChatConversation(models.Model):

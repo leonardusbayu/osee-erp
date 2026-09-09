@@ -15,6 +15,13 @@ class Organization(models.Model):
     def __str__(self):
         return self.name
 
+class ActiveMembershipManager(models.Manager):
+    """Authorization queries always exclude revoked company access."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_active=True)
+
+
 class Membership(models.Model):
     TEAM_ROLES = [("owner", "Owner/Direktur"), ("marketing", "Marketing"), ("finance", "Finance")]
     # Keep stored legacy memberships readable without changing their permissions.
@@ -22,9 +29,23 @@ class Membership(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.PROTECT)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     role = models.CharField(max_length=20, choices=ROLES, default="finance")
+    is_active = models.BooleanField(default=True)
+    objects = ActiveMembershipManager()
+    all_objects = models.Manager()
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["organization", "user"], name="unique_membership")]
+
+
+class AccountSecurity(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="account_security")
+    totp_secret = models.TextField(blank=True)
+    totp_enabled = models.BooleanField(default=False)
+    totp_last_counter = models.BigIntegerField(default=-1)
+    recovery_codes = models.JSONField(default=list)
+    require_password_change = models.BooleanField(default=False)
+    session_version = models.PositiveIntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
 
 class AuditEvent(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.PROTECT)

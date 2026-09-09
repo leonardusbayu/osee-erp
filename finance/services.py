@@ -20,6 +20,8 @@ from django.utils import timezone
 from core.audit import record
 from core.models import DomainEvent, Membership, Organization
 from .models import AccountingPeriod, Allocation, BankAccount, BankTransaction, Bill, BillPayment, Invoice, Journal, JournalLine, Party, PriceVersion, Product, ZERO, assert_open_period
+from .models import (AdvanceApplication, BankOpening, BankPosting, CustomerAdvance, CustomerRefund,
+                     InvoiceCancellation, PrepaymentRelease, TaxRemittance, WithholdingSettlement)
 
 
 CENT = Decimal("0.01")
@@ -60,7 +62,7 @@ def _authorize(organization, actor, *, close=False):
         return
     allowed = ["owner", "reviewer"] if close else ["owner", "finance"]
     if not getattr(actor, "is_authenticated", False) or not Membership.objects.filter(
-        organization=organization, user=actor, role__in=allowed
+        organization=organization, user=actor, user__is_active=True, role__in=allowed
     ).exists():
         raise PermissionDenied("Anda tidak memiliki peran untuk tindakan ini.")
 
@@ -155,7 +157,7 @@ def _resolve_price(organization, party, product, pricing_date):
 @db_transaction.atomic
 def replace_price_version(*, organization, price_version, amount, effective_from, reason, actor=None):
     organization = _lock_org(organization)
-    if actor is not None and not Membership.objects.filter(organization=organization, user=actor, role="owner").exists():
+    if actor is not None and not Membership.objects.filter(organization=organization, user=actor, user__is_active=True, role="owner").exists():
         raise PermissionDenied("Hanya pemilik yang dapat mengganti versi harga.")
     old = _scoped(PriceVersion, price_version, organization, lock=True)
     start = _date(effective_from)
@@ -260,6 +262,7 @@ def record_delivery(*, organization, invoice, date=None, actor=None):
     if delivery_date < invoice.date:
         raise ValidationError("Tanggal layanan tidak boleh sebelum tanggal tagihan dalam alur ini.")
     paid_at_delivery = invoice.allocations.filter(transaction__date__lte=delivery_date).aggregate(value=Sum("amount"))["value"] or ZERO
+    paid_at_delivery += invoice.advance_applications.filter(date__lte=delivery_date).aggregate(value=Sum("amount"))["value"] or ZERO
     if invoice.party.kind == "reseller" and paid_at_delivery < invoice.total:
         raise ValidationError("Mitra harus melunasi pesanan sebelum tes. Selesaikan alokasi pembayaran.")
     _post(organization, delivery_date, f"invoice:{invoice.pk}:delivery", f"Layanan selesai {invoice.number}",
@@ -411,7 +414,7 @@ def approve_bill(*, organization, bill, actor=None):
         raise ValidationError("Tagihan pembelian tidak dapat disahkan.")
     # Non-PKP supported workflow: amount already includes supplier VAT.
     # Tax review remains independent; no guessed withholding or VAT credit.
-    expense_account = "PREPAID" if bill.category == "prepayment" else "EXPENSE"
+    expense_account = "PREPAID" if bill.category == "prepayment" or bill.service_date > bill.date else "EXPENSE"
     _post(organization, bill.date, f"bill:{bill.pk}:approval", f"Pembelian {bill.number}",
           [(expense_account, bill.amount, ZERO), ("AP", ZERO, bill.amount)])
     bill.status = "approved"
@@ -470,12 +473,14 @@ def pending_bank_transactions(*, organization):
     payments = BillPayment.objects.filter(
         organization=organization, transaction_id=OuterRef("pk")
     ).order_by().values("transaction_id").annotate(total=Sum("amount")).values("total")
+    other = BankPosting.objects.filter(organization=organization, transaction_id=OuterRef("pk")).order_by().values("transaction_id").annotate(total=Sum("signed_amount")).values("total")
     return BankTransaction.objects.filter(organization=organization).annotate(
         receipt_total=Coalesce(Subquery(receipts, output_field=money), Value(ZERO), output_field=money),
         payment_total=Coalesce(Subquery(payments, output_field=money), Value(ZERO), output_field=money),
+        other_total=Coalesce(Subquery(other, output_field=money), Value(ZERO), output_field=money),
     ).annotate(
         remaining_amount=ExpressionWrapper(
-            F("amount") - F("receipt_total") + F("payment_total"), output_field=money
+            F("amount") - F("receipt_total") + F("payment_total") - F("other_total"), output_field=money
         ),
     ).exclude(remaining_amount=ZERO)
 
@@ -510,8 +515,18 @@ def _close_blockers(organization, end):
         blockers.append("Masih ada draf tagihan pembelian.")
     if Bill.objects.filter(organization=organization, date__lte=end).exclude(tax_status="reviewed").exists():
         blockers.append("Tinjauan pajak tagihan pembelian belum selesai.")
-    if Bill.objects.filter(organization=organization, date__lte=end, status="approved", tax_status="reviewed").filter(Q(tax_amount__isnull=True) | Q(tax_amount__gt=0)).exists():
-        blockers.append("Nominal potongan pajak belum ditetapkan nol atau memerlukan alur penyelesaian pajak yang belum didukung.")
+    prepaid_total = ZERO
+    for bill in Bill.objects.filter(organization=organization, date__lte=end, status="approved").filter(Q(category="prepayment") | Q(service_date__gt=F("date"))):
+        released = bill.prepayment_releases.filter(date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+        prepaid_total += bill.amount - released
+        if bill.service_date <= end and released < bill.amount:
+            blockers.append("Biaya dibayar di muka yang tanggal layanannya sudah tiba belum dilepas setelah pemeriksaan layanan.")
+    if Bill.objects.filter(organization=organization, date__lte=end, status="approved", tax_status="reviewed", tax_amount__isnull=True).exists():
+        blockers.append("Nominal potongan pajak belum diputuskan.")
+    for bill in Bill.objects.filter(organization=organization, date__lte=end, status="approved", tax_status="reviewed", tax_amount__gt=0):
+        if not hasattr(bill, "tax_decision") or (bill.tax_decision.period <= end and not WithholdingSettlement.objects.filter(bill=bill, date__lte=end).exists()):
+            blockers.append("Keputusan dan pengakuan potongan pajak tagihan belum lengkap pada tanggal laporan.")
+            break
     if pending_bank_transactions(organization=organization).filter(date__lte=end).exists():
         blockers.append("Ada mutasi bank masuk/keluar yang belum direkonsiliasi.")
     if Journal.objects.filter(organization=organization, date__lte=end, status="draft").exists():
@@ -522,17 +537,36 @@ def _close_blockers(organization, end):
             blockers.append("Ditemukan jurnal tidak seimbang.")
             break
     balances = report_balances(organization=organization, as_of=end)
-    invoiced = sum((i.total for i in Invoice.objects.filter(organization=organization, date__lte=end, status__in=["issued", "delivered"])), ZERO)
+    if balances["PREPAID"] != prepaid_total:
+        blockers.append("Saldo biaya dibayar di muka tidak sama dengan tagihan dan pelepasan tertaut.")
+    posted_invoices = Invoice.objects.filter(organization=organization, date__lte=end).filter(
+        Q(status__in=["issued", "delivered"]) | Q(status="cancelled", cancellation__isnull=False))
+    invoiced = sum((i.total for i in posted_invoices), ZERO)
     allocated = Allocation.objects.filter(organization=organization, transaction__date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+    applied = AdvanceApplication.objects.filter(organization=organization, date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+    cancellations = InvoiceCancellation.objects.filter(organization=organization, date__lte=end)
+    cancelled = cancellations.aggregate(amount=Sum("amount"), unpaid=Sum("unpaid_amount"), refundable=Sum("refund_amount"))
     bills = Bill.objects.filter(organization=organization, status="approved", date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
     bill_payments = BillPayment.objects.filter(organization=organization, transaction__date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
-    if balances["AR"] != invoiced - allocated:
+    settlements = WithholdingSettlement.objects.filter(organization=organization, date__lte=end).aggregate(gross=Sum("gross_amount"), tax=Sum("withholding_amount"))
+    bill_payments += settlements["gross"] or ZERO
+    if balances["AR"] != invoiced - allocated - applied - (cancelled["unpaid"] or ZERO):
         blockers.append("Saldo piutang tidak sama dengan subledger tagihan/alokasi.")
     if balances["AP"] != -(bills - bill_payments):
         blockers.append("Saldo utang tidak sama dengan subledger tagihan pembelian.")
     recognized = sum((i.total for i in Invoice.objects.filter(organization=organization, delivered_at__lte=end, status="delivered")), ZERO)
-    if balances["DEFERRED_REVENUE"] != -(invoiced - recognized):
+    if balances["DEFERRED_REVENUE"] != -(invoiced - recognized - (cancelled["amount"] or ZERO)):
         blockers.append("Saldo pendapatan diterima di muka tidak sama dengan kewajiban layanan.")
+    advances = CustomerAdvance.objects.filter(organization=organization, date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+    advance_refunds = CustomerRefund.objects.filter(organization=organization, advance__isnull=False, date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+    invoice_refunds = CustomerRefund.objects.filter(organization=organization, cancellation__isnull=False, date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+    if balances["CUSTOMER_ADVANCE"] != -(advances - applied - advance_refunds):
+        blockers.append("Saldo uang muka pelanggan tidak sama dengan penerimaan, alokasi, dan pengembalian.")
+    if balances["CUSTOMER_REFUND"] != -((cancelled["refundable"] or ZERO) - invoice_refunds):
+        blockers.append("Saldo utang refund tidak sama dengan pembatalan dan pengembalian.")
+    remittances = TaxRemittance.objects.filter(organization=organization, date__lte=end).aggregate(value=Sum("amount"))["value"] or ZERO
+    if balances["TAX_PAYABLE"] != -((settlements["tax"] or ZERO) - remittances):
+        blockers.append("Saldo utang pajak potongan tidak sama dengan pengakuan dan setoran tertaut.")
     return blockers
 
 
@@ -543,12 +577,14 @@ def monthly_summary(*, organization, year, month):
     for row in rows.values("account").annotate(debit=Sum("debit"), credit=Sum("credit")):
         movements[row["account"]] = row["debit"] - row["credit"]
     bank = BankTransaction.objects.filter(organization=organization, date__range=(start, end))
-    invoices = Invoice.objects.filter(organization=organization, date__range=(start, end)).exclude(status__in=["draft", "cancelled"])
+    invoices = Invoice.objects.filter(organization=organization, date__range=(start, end)).filter(
+        Q(status__in=["issued", "delivered"]) | Q(status="cancelled", cancellation__isnull=False))
     return {
         "year": start.year, "month": start.month, "start": start, "end": end,
         "revenue": -movements["REVENUE"], "expenses": movements["EXPENSE"],
         "profit": -movements["REVENUE"] - movements["EXPENSE"],
         "invoiced": sum((i.total for i in invoices), ZERO), "invoice_count": invoices.count(),
+        "invoice_cancellations": InvoiceCancellation.objects.filter(organization=organization, date__range=(start, end)).aggregate(value=Sum("amount"))["value"] or ZERO,
         "bank_in": bank.filter(amount__gt=0).aggregate(value=Sum("amount"))["value"] or ZERO,
         "bank_out": -(bank.filter(amount__lt=0).aggregate(value=Sum("amount"))["value"] or ZERO),
         "unmatched_count": pending_bank_transactions(organization=organization).filter(date__range=(start, end)).count(),
@@ -572,7 +608,9 @@ def close_month(*, organization, year, month, actor=None):
     blockers = _close_blockers(organization, end)
     if blockers:
         raise ValidationError(blockers)
-    period = _period(organization, start)
+    # Recording review of an earlier frozen month does not reopen its posting
+    # boundary. This permits completing annual close records out of order.
+    period, _ = AccountingPeriod.objects.get_or_create(organization=organization, year=start.year, month=start.month)
     period.closed = True
     period.closed_at = timezone.now()
     period.save()
@@ -580,3 +618,336 @@ def close_month(*, organization, year, month, actor=None):
            detail={"year": start.year, "month": start.month,
                    "balances": {key: str(value) for key, value in report_balances(organization=organization, as_of=end).items()}})
     return period
+
+
+def _review_text(value, label, *, limit=4000):
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > limit:
+        raise ValidationError(f"{label} wajib diisi, maksimal {limit} karakter.")
+    return value.strip()
+
+
+def _owner(organization, actor):
+    if actor is None or not Membership.objects.filter(organization=organization, user=actor, user__is_active=True, role="owner").exists():
+        raise PermissionDenied("Tindakan ini memerlukan persetujuan Owner/Direktur aktif.")
+
+
+def _write_actor(organization, actor):
+    if actor is None:
+        raise PermissionDenied("Pelaku aktif wajib dicatat untuk alur ini.")
+    _authorize(organization, actor)
+
+
+def _event_row(model, **values):
+    row = model(**values)
+    row._service_transition = True
+    row.save()
+    return row
+
+
+def _actual_date(value):
+    result = _date(value)
+    _month_bounds(result.year, result.month)
+    if result > timezone.localdate():
+        raise ValidationError("Tanggal transaksi aktual tidak boleh di masa depan.")
+    return result
+
+
+def _bank_post(organization, bank_line, signed_amount, kind, reference, evidence, entries, actor):
+    reference = _review_text(reference, "Referensi", limit=120)
+    evidence = _review_text(evidence, "Bukti / alasan pemeriksaan")
+    _actual_date(bank_line.date)
+    old = BankPosting.objects.filter(organization=organization, reference=reference).first()
+    expected = dict(transaction_id=bank_line.pk, signed_amount=signed_amount, kind=kind, evidence=evidence)
+    if old:
+        if any(getattr(old, key) != value for key, value in expected.items()):
+            raise ValidationError("Referensi alokasi sudah dipakai untuk fakta berbeda.")
+        return old
+    if not signed_amount or signed_amount * bank_line.amount <= ZERO or abs(signed_amount) > abs(bank_line.unallocated_amount):
+        raise ValidationError("Arah atau jumlah alokasi melebihi sisa bukti bank.")
+    journal = _post(organization, bank_line.date, f"bank-event:{reference}", f"Rekonsiliasi {kind}", entries)
+    result = _event_row(BankPosting, organization=organization, transaction=bank_line,
+        signed_amount=signed_amount, kind=kind, date=bank_line.date, reference=reference, evidence=evidence, journal=journal)
+    record(organization, actor, "finance.bank.posted", obj=result,
+           detail={"kind": kind, "transaction_id": bank_line.pk, "signed_amount": str(signed_amount), "reference": reference})
+    return result
+
+
+@db_transaction.atomic
+def reconcile_bank_adjustment(*, organization, transaction, kind, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    bank_line = _scoped(BankTransaction, transaction, organization, lock=True)
+    amount = _amount(amount)
+    if kind == "bank_fee":
+        signed, entries = -amount, [("EXPENSE", amount, ZERO), ("BANK", ZERO, amount)]
+    elif kind == "owner_funding":
+        _owner(organization, actor)
+        signed, entries = amount, [("BANK", amount, ZERO), ("EQUITY", ZERO, amount)]
+    else:
+        raise ValidationError("Pilih biaya bank atau setoran modal pemilik; jenis lain memerlukan alur sumber tersendiri.")
+    return _bank_post(organization, bank_line, signed, kind, reference, evidence, entries, actor)
+
+
+@db_transaction.atomic
+def reconcile_bank_transfer(*, organization, outgoing, incoming, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    outgoing = _scoped(BankTransaction, outgoing, organization, lock=True)
+    incoming = _scoped(BankTransaction, incoming, organization, lock=True)
+    reference = _review_text(reference, "Referensi transfer", limit=110)
+    amount = _amount(amount)
+    if outgoing.account_id == incoming.account_id or outgoing.amount >= ZERO or incoming.amount <= ZERO or incoming.date < outgoing.date:
+        raise ValidationError("Transfer memerlukan mutasi keluar dan masuk di rekening berbeda; tanggal masuk tidak mendahului keluar.")
+    out = _bank_post(organization, outgoing, -amount, "transfer_out", reference + ":out", evidence,
+        [("BANK_TRANSFER", amount, ZERO), ("BANK", ZERO, amount)], actor)
+    inc = _bank_post(organization, incoming, amount, "transfer_in", reference + ":in", evidence,
+        [("BANK", amount, ZERO), ("BANK_TRANSFER", ZERO, amount)], actor)
+    return {"outgoing": out, "incoming": inc}
+
+
+@db_transaction.atomic
+def record_bank_opening(*, organization, account, date, amount, reference, evidence, actor):
+    """Record reviewed start-of-day bank balance; no fabricated AR/AP migration."""
+    organization = _lock_org(organization)
+    _owner(organization, actor)
+    account = _scoped(BankAccount, account, organization, lock=True)
+    date, amount = _actual_date(date), _amount(amount, positive=False)
+    reference, evidence = _review_text(reference, "Referensi", limit=120), _review_text(evidence, "Bukti pemeriksaan saldo awal")
+    if amount == ZERO:
+        raise ValidationError("Saldo nol tidak memerlukan jurnal saldo awal; jangan membuat jurnal tanpa nilai.")
+    old = BankOpening.objects.filter(organization=organization, account=account).first()
+    if old:
+        if (old.date, old.amount, old.reference, old.evidence) != (date, amount, reference, evidence):
+            raise ValidationError("Saldo awal rekening sudah dicatat; perubahan memerlukan koreksi terpisah.")
+        return old
+    if BankTransaction.objects.filter(organization=organization, account=account, date__lt=date).exists():
+        raise ValidationError("Ada mutasi sebelum tanggal awal. Rekonstruksi saldo dan cakupan terlebih dahulu.")
+    # Opening balances cannot be inserted after any posting and silently recast old reports.
+    if Journal.objects.filter(organization=organization, status="posted", date__lt=date).exists():
+        raise ValidationError("Saldo awal harus mendahului seluruh jurnal terposting organisasi.")
+    values = [("BANK", amount, ZERO), ("EQUITY", ZERO, amount)] if amount > ZERO else [("EQUITY", -amount, ZERO), ("BANK", ZERO, -amount)]
+    journal = _post(organization, date, f"bank-opening:{account.pk}", "Saldo awal bank yang ditinjau pemilik", values)
+    result = _event_row(BankOpening, organization=organization, account=account, date=date, amount=amount,
+        reference=reference, evidence=evidence, journal=journal)
+    account.opening_date, account.opening_balance = date, amount
+    account._opening_service_transition = True
+    account.save()
+    record(organization, actor, "finance.bank.opening_reviewed", obj=result,
+        detail={"account_id": account.pk, "amount": str(amount), "basis": "Saldo awal bank yang ditinjau pemilik; bukan rekonstruksi AR/AP atau seluruh neraca."})
+    return result
+
+
+@db_transaction.atomic
+def release_prepayment(*, organization, bill, date, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    bill = _scoped(Bill, bill, organization, lock=True)
+    date, amount = _actual_date(date), _amount(amount)
+    reference, evidence = _review_text(reference, "Referensi", limit=120), _review_text(evidence, "Bukti layanan telah diperoleh")
+    old = PrepaymentRelease.objects.filter(organization=organization, reference=reference).first()
+    if old:
+        if (old.bill_id, old.date, old.amount, old.evidence) != (bill.pk, date, amount, evidence):
+            raise ValidationError("Referensi pelepasan sudah dipakai untuk fakta berbeda.")
+        return old
+    if date < max(bill.date, bill.service_date) or amount > bill.prepaid_remaining:
+        raise ValidationError("Pelepasan harus setelah tanggal layanan dan tidak melebihi sisa biaya dibayar di muka.")
+    journal = _post(organization, date, f"prepayment:{reference}", f"Biaya layanan {bill.number}", [("EXPENSE", amount, ZERO), ("PREPAID", ZERO, amount)])
+    result = _event_row(PrepaymentRelease, organization=organization, bill=bill, date=date, amount=amount,
+        reference=reference, evidence=evidence, journal=journal)
+    record(organization, actor, "finance.prepayment.released", obj=result, detail={"bill_id": bill.pk, "amount": str(amount)})
+    return result
+
+
+@db_transaction.atomic
+def record_customer_advance(*, organization, party, transaction, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    party = _scoped(Party, party, organization, lock=True)
+    bank_line = _scoped(BankTransaction, transaction, organization, lock=True)
+    amount = _amount(amount)
+    if party.kind not in ("customer", "reseller"):
+        raise ValidationError("Uang muka pelanggan memerlukan pelanggan atau mitra reseller.")
+    posting = _bank_post(organization, bank_line, amount, "customer_advance", reference, evidence,
+        [("BANK", amount, ZERO), ("CUSTOMER_ADVANCE", ZERO, amount)], actor)
+    old = CustomerAdvance.objects.filter(organization=organization, bank_posting=posting).first()
+    if old:
+        if old.party_id != party.pk or old.amount != amount:
+            raise ValidationError("Uang muka sudah tercatat untuk pelanggan atau jumlah berbeda.")
+        return old
+    result = _event_row(CustomerAdvance, organization=organization, party=party, bank_posting=posting,
+        amount=amount, date=posting.date, reference=posting.reference, evidence=posting.evidence, journal=posting.journal)
+    record(organization, actor, "finance.customer.advance_received", obj=result, detail={"party_id": party.pk, "amount": str(amount)})
+    return result
+
+
+@db_transaction.atomic
+def apply_customer_advance(*, organization, advance, invoice, date, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    advance = _scoped(CustomerAdvance, advance, organization, lock=True)
+    invoice = _scoped(Invoice, invoice, organization, lock=True)
+    date, amount = _actual_date(date), _amount(amount)
+    reference, evidence = _review_text(reference, "Referensi", limit=120), _review_text(evidence, "Bukti alokasi")
+    old = AdvanceApplication.objects.filter(organization=organization, reference=reference).first()
+    if old:
+        if (old.advance_id, old.invoice_id, old.date, old.amount, old.evidence) != (advance.pk, invoice.pk, date, amount, evidence):
+            raise ValidationError("Referensi uang muka sudah digunakan untuk alokasi berbeda.")
+        return old
+    if invoice.status not in ("issued", "delivered") or advance.party_id != invoice.party_id:
+        raise ValidationError("Uang muka hanya dapat diterapkan ke invoice terbit milik pelanggan yang sama.")
+    if date < max(invoice.date, advance.date) or amount > min(advance.remaining_amount, invoice.outstanding_amount):
+        raise ValidationError("Tanggal atau jumlah alokasi tidak sesuai sisa uang muka dan invoice.")
+    journal = _post(organization, date, f"advance-apply:{reference}", f"Penerapan uang muka {invoice.number}",
+        [("CUSTOMER_ADVANCE", amount, ZERO), ("AR", ZERO, amount)])
+    result = _event_row(AdvanceApplication, organization=organization, advance=advance, invoice=invoice,
+        date=date, amount=amount, reference=reference, evidence=evidence, journal=journal)
+    record(organization, actor, "finance.customer.advance_applied", obj=result,
+        detail={"invoice_id": invoice.pk, "advance_id": advance.pk, "amount": str(amount)})
+    return result
+
+
+@db_transaction.atomic
+def cancel_invoice(*, organization, invoice, date, reason, actor):
+    """Cancel a whole unfulfilled order; cash already collected becomes refund liability."""
+    organization = _lock_org(organization)
+    _owner(organization, actor)
+    invoice = _scoped(Invoice, invoice, organization, lock=True)
+    date, reason = _actual_date(date), _review_text(reason, "Alasan pembatalan")
+    if invoice.status == "cancelled":
+        previous = InvoiceCancellation.objects.filter(invoice=invoice).first()
+        if previous and (previous.date != date or previous.evidence != reason):
+            raise ValidationError("Invoice sudah dibatalkan dengan tanggal atau alasan berbeda.")
+        return invoice
+    if invoice.status not in ("draft", "issued") or date < invoice.date:
+        raise ValidationError("Pembatalan ini hanya untuk seluruh pesanan sebelum layanan selesai dan setelah tanggal invoice.")
+    if invoice.allocations.filter(transaction__date__gt=date).exists() or invoice.advance_applications.filter(date__gt=date).exists():
+        raise ValidationError("Tanggal pembatalan tidak boleh mendahului pembayaran atau alokasi yang sudah tercatat.")
+    _period(organization, date)
+    if invoice.status == "issued":
+        paid = invoice.paid_amount
+        unpaid = invoice.total - paid
+        entries = [("DEFERRED_REVENUE", invoice.total, ZERO)]
+        if unpaid:
+            entries.append(("AR", ZERO, unpaid))
+        if paid:
+            entries.append(("CUSTOMER_REFUND", ZERO, paid))
+        journal = _post(organization, date, f"invoice:{invoice.pk}:cancellation", f"Pembatalan {invoice.number}", entries)
+        _event_row(InvoiceCancellation, organization=organization, invoice=invoice, journal=journal, date=date,
+            amount=invoice.total, unpaid_amount=unpaid, refund_amount=paid, reference=f"cancel:{invoice.pk}", evidence=reason)
+    invoice.status = "cancelled"
+    invoice._service_transition = True
+    invoice.save()
+    record(organization, actor, "finance.invoice.cancelled", obj=invoice, detail={"date": date.isoformat(), "reason": reason})
+    return invoice
+
+
+def _customer_refund(organization, bank_line, amount, reference, evidence, actor, *, advance=None, cancellation=None):
+    reference = _review_text(reference, "Referensi", limit=120)
+    origin = advance or cancellation
+    liability = "CUSTOMER_ADVANCE" if advance else "CUSTOMER_REFUND"
+    amount = _amount(amount)
+    old_post = BankPosting.objects.filter(organization=organization, reference=reference).first()
+    if old_post:
+        old = CustomerRefund.objects.filter(organization=organization, bank_posting=old_post).first()
+        if not old or old.advance_id != (advance.pk if advance else None) or old.cancellation_id != (cancellation.pk if cancellation else None):
+            raise ValidationError("Referensi pengembalian sudah dipakai untuk sumber berbeda.")
+        posting = _bank_post(organization, bank_line, -amount, "customer_refund", reference, evidence,
+            [(liability, amount, ZERO), ("BANK", ZERO, amount)], actor)
+        return old
+    available = advance.remaining_amount if advance else cancellation.refund_remaining
+    if bank_line.date < origin.date or amount > available:
+        raise ValidationError("Pengembalian mendahului sumber atau melebihi sisa utang pengembalian.")
+    posting = _bank_post(organization, bank_line, -amount, "customer_refund", reference, evidence,
+        [(liability, amount, ZERO), ("BANK", ZERO, amount)], actor)
+    result = _event_row(CustomerRefund, organization=organization, advance=advance, cancellation=cancellation,
+        amount=amount, date=posting.date, reference=posting.reference, evidence=posting.evidence, journal=posting.journal, bank_posting=posting)
+    record(organization, actor, "finance.customer.refunded", obj=result, detail={"amount": str(amount), "liability": liability})
+    return result
+
+
+@db_transaction.atomic
+def refund_customer_advance(*, organization, advance, transaction, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    advance = _scoped(CustomerAdvance, advance, organization, lock=True)
+    bank_line = _scoped(BankTransaction, transaction, organization, lock=True)
+    return _customer_refund(organization, bank_line, amount, reference, evidence, actor, advance=advance)
+
+
+@db_transaction.atomic
+def refund_cancelled_invoice(*, organization, invoice, transaction, amount, reference, evidence, actor):
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    invoice = _scoped(Invoice, invoice, organization, lock=True)
+    bank_line = _scoped(BankTransaction, transaction, organization, lock=True)
+    cancellation = InvoiceCancellation.objects.filter(organization=organization, invoice=invoice).first()
+    if invoice.status != "cancelled" or not cancellation:
+        raise ValidationError("Pengembalian memerlukan pembatalan invoice terbit sebelum layanan selesai.")
+    return _customer_refund(organization, bank_line, amount, reference, evidence, actor, cancellation=cancellation)
+
+
+@db_transaction.atomic
+def reconcile_withheld_bill_payment(*, organization, bill, transaction, actor):
+    """Full net settlement against an approved, source-linked withholding decision."""
+    from taxes.models import BillTaxDecision
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    bill = _scoped(Bill, bill, organization, lock=True)
+    bank_line = _scoped(BankTransaction, transaction, organization, lock=True)
+    previous = WithholdingSettlement.objects.filter(organization=organization, bill=bill).first()
+    if previous:
+        if previous.bank_posting.transaction_id != bank_line.pk:
+            raise ValidationError("Tagihan sudah dilunasi dari mutasi lain.")
+        return previous
+    decision = BillTaxDecision.objects.filter(organization=organization, bill=bill).select_related("obligation").first()
+    obligation = decision.obligation if decision else None
+    if (bill.status != "approved" or bill.tax_status != "reviewed" or bill.tax_amount is None
+            or not ZERO < bill.tax_amount < bill.amount or not obligation or obligation.status != "approved"
+            or obligation.organization_id != organization.pk or obligation.source_bill_id != bill.pk
+            or obligation.direction != "payable" or obligation.tax_type != "pph23"
+            or obligation.amount != bill.tax_amount or decision.amount != bill.tax_amount):
+        raise ValidationError("Pembayaran neto memerlukan keputusan potongan PPh 23 yang disetujui dan tertaut ke tagihan ini.")
+    if bill.payments.exists() or bill.outstanding_amount != bill.amount:
+        raise ValidationError("Alur potongan ini hanya mendukung satu pelunasan penuh; pembayaran parsial sebelumnya memerlukan peninjauan.")
+    if bank_line.date < bill.date or bank_line.date.replace(day=1) != decision.period:
+        raise ValidationError("Tanggal pembayaran harus sesudah tagihan dan berada pada masa potongan yang ditinjau; pengakuan lintas masa memerlukan alur akrual tersendiri.")
+    net = bill.amount - bill.tax_amount
+    posting = _bank_post(organization, bank_line, -net, "withheld_supplier", f"withheld-bill:{bill.pk}",
+        f"Keputusan pajak {decision.pk}; kewajiban {obligation.pk}",
+        [("AP", bill.amount, ZERO), ("BANK", ZERO, net), ("TAX_PAYABLE", ZERO, bill.tax_amount)], actor)
+    result = _event_row(WithholdingSettlement, organization=organization, bill=bill, obligation=obligation,
+        bank_posting=posting, gross_amount=bill.amount, net_amount=net, withholding_amount=bill.tax_amount,
+        date=posting.date, reference=posting.reference, evidence=posting.evidence, journal=posting.journal)
+    record(organization, actor, "finance.bill.withholding_settled", obj=result,
+        detail={"bill_id": bill.pk, "obligation_id": obligation.pk, "gross": str(bill.amount), "net": str(net), "withholding": str(bill.tax_amount)})
+    return result
+
+
+@db_transaction.atomic
+def reconcile_tax_remittance(*, organization, obligation, transaction, amount, reference, evidence, actor):
+    from taxes.models import TaxObligation
+    organization = _lock_org(organization)
+    _write_actor(organization, actor)
+    obligation = _scoped(TaxObligation, obligation, organization, lock=True)
+    bank_line = _scoped(BankTransaction, transaction, organization, lock=True)
+    amount = _amount(amount)
+    reference = _review_text(reference, "Referensi", limit=120)
+    old_post = BankPosting.objects.filter(organization=organization, reference=reference).first()
+    if old_post:
+        old = TaxRemittance.objects.filter(organization=organization, bank_posting=old_post).first()
+        if not old or old.obligation_id != obligation.pk:
+            raise ValidationError("Referensi setoran sudah dipakai untuk kewajiban berbeda.")
+        _bank_post(organization, bank_line, -amount, "tax_remittance", reference, evidence,
+            [("TAX_PAYABLE", amount, ZERO), ("BANK", ZERO, amount)], actor)
+        return old
+    settlement = WithholdingSettlement.objects.filter(organization=organization, obligation=obligation).first()
+    paid = TaxRemittance.objects.filter(organization=organization, obligation=obligation).aggregate(value=Sum("amount"))["value"] or ZERO
+    if not settlement or obligation.status != "approved" or obligation.direction != "payable" or bank_line.date < settlement.date or amount > settlement.withholding_amount - paid:
+        raise ValidationError("Setoran harus tertaut ke utang potongan yang sudah diakui dan tidak melebihi sisanya.")
+    posting = _bank_post(organization, bank_line, -amount, "tax_remittance", reference, evidence,
+        [("TAX_PAYABLE", amount, ZERO), ("BANK", ZERO, amount)], actor)
+    result = _event_row(TaxRemittance, organization=organization, obligation=obligation, bank_posting=posting,
+        amount=amount, date=posting.date, reference=posting.reference, evidence=posting.evidence, journal=posting.journal)
+    record(organization, actor, "finance.tax.remittance_reconciled", obj=result,
+        detail={"obligation_id": obligation.pk, "amount": str(amount), "official_evidence_verified": False})
+    return result

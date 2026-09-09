@@ -3,8 +3,12 @@ from django.urls import include, path
 from webapp import views
 from webapp import import_views
 from taxes import views as tax_views
+from config.health import readiness_response
 
 urlpatterns = [
+    path("", include("webapp.account_views")),
+    path("", include("webapp.statement_views")),
+    path("", include("webapp.operations_views")),
     path("marketing/", include("marketing.urls")),
     path("director/", include("director.urls")),
     path("", views.dashboard, name="dashboard"),
@@ -25,7 +29,6 @@ urlpatterns = [
     path("bills/<int:pk>/attachments/", views.bill_attachment, name="bill_attachment"),
     path("bills/<int:pk>/approve/", views.bill_approve, name="bill_approve"),
     path("bank/", views.bank, name="bank"),
-    path("bank/import/", views.bank_import, name="bank_import"),
     path("bank/template/", views.bank_template, name="bank_template"),
     path("bank/accounts/new/", views.bank_account_create, name="bank_account_create"),
     path("bank/<int:pk>/match/", views.bank_match, name="bank_match"),
@@ -50,6 +53,7 @@ urlpatterns = [
     path("tax/", include("taxes.urls")),
     path("evidence/", include("evidence.urls")),
     path("health/", views.health, name="health"),
+    path("ready/", readiness_response, name="readiness"),
     path("imports/", import_views.overview, name="imports_overview"),
     path("imports/export/", import_views.export, name="imports_export"),
     path("imports/sources/<int:pk>/", import_views.source_download, name="import_source"),

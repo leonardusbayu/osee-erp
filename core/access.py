@@ -17,7 +17,7 @@ def organization_required(view):
         # Marketing accounts are deliberately outside the Finance/Tax workspace.
         # Director and Marketing routes apply their own page/action permissions.
         match = request.resolver_match
-        if membership.role == "marketing" and match and match.namespace not in {"director", "marketing"} and match.url_name not in {"modules", "password_change"}:
+        if membership.role == "marketing" and match and match.namespace not in {"director", "marketing"} and match.url_name not in {"modules", "password_change", "security_settings"}:
             raise PermissionDenied("Akun marketing tidak memiliki akses ke workspace keuangan.")
         return view(request, *args, **kwargs)
     return wrapped

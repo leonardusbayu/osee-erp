@@ -1,3 +1,5 @@
+> Pembaruan 9 September 2026: bagian di bawah mempertahankan riwayat implementasi awal. Status kontrol setelah audit ada di [Hasil perbaikan](REMEDIATION-2026-09-09.md) dan [Panduan Finance](FINANCE-OPERATING-GUIDE.md). Batas integrasi bank, data nyata, pajak resmi, dan penerimaan cloud tetap dijelaskan di laporan terbaru.
+
 # Implementation status
 
 Status updated on 9 September 2026. This describes the local Django finance and Director implementation. The [finance ERP architecture](FINANCE-ERP-ARCHITECTURE.md) and [Director module architecture](DIRECTOR-MODULE-ARCHITECTURE.md) remain broader targets; their entire scope is not delivered by this release.

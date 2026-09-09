@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% load finance_format %}{% block title %}{{ title }}{% endblock %}{% block content %}
+<div class="page-heading"><div><a class="back-link" href="{{ cancel_url }}">← Kembali ke penyelesaian keuangan</a><h1>{{ title }}</h1><p>{{ description }}</p></div></div>
+{% if source_label %}<div class="info-strip"><strong>Dokumen dipilih:</strong> <span>{{ source_label }}</span></div>{% endif %}
+{% if settlement_amounts %}<section class="panel"><div class="panel-heading"><div><h2>Jumlah yang akan dibukukan</h2><p>Bruto {{ settlement_amounts.gross|money }} · potongan {{ settlement_amounts.withheld|money }} · pembayaran bersih {{ settlement_amounts.net|money }}</p></div></div></section>{% endif %}
+<div class="form-layout"><section class="panel form-panel"><form method="post" novalidate>{% csrf_token %}
+{% if form.non_field_errors %}<div class="message message-error" role="alert">{{ form.non_field_errors }}</div>{% endif %}
+<div class="form-fields">{% for field in form %}{% if field.is_hidden %}{{ field }}{% else %}<div class="field-row {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required" aria-label="wajib"> *</span>{% endif %}</label>{{ field }}{% if field.help_text %}<p class="field-help">{{ field.help_text }}</p>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endif %}{% endfor %}</div>
+<div class="form-actions"><a class="button button-secondary" href="{{ cancel_url }}">Batal</a><button class="button button-primary" type="submit">{{ action_label }}</button></div></form></section>
+<aside class="form-note"><h3>Bukti sebelum pembukuan</h3><p>Periksa rekening, pelanggan atau pemasok, tanggal, dan jumlah terhadap dokumen asli.</p><div class="divider"></div><p>Formulir ini mencatat bukti yang sudah ada. Pembayaran dilakukan melalui otorisasi bank perusahaan; bukti resminya ditinjau secara terpisah.</p><p class="small">Perubahan disimpan dalam riwayat audit dan mengikuti periode buku yang sudah dikunci.</p></aside></div>
+{% endblock %}

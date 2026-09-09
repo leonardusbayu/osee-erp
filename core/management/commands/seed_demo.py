@@ -66,7 +66,10 @@ class Command(BaseCommand):
             services.reconcile_receipt(organization=org, invoice=inv, transaction=bank_line, amount=inv.total)
             services.record_delivery(organization=org, invoice=inv, date=delivered)
             cost = Decimal(quantity) * 450000
-            bill = Bill.objects.create(organization=org, number=f"DEMO-COST-{idx}", supplier=supplier, amount=cost, date=delivered, service_date=delivered, category="provider", tax_status="reviewed", tax_amount=Decimal("0"))
+            bill = Bill(organization=org, number=f"DEMO-COST-{idx}", supplier=supplier, amount=cost, date=delivered, service_date=delivered, category="provider", tax_status="reviewed", tax_amount=Decimal("0"))
+            # Synthetic demonstration fixture only; real bills use documented tax review.
+            bill._tax_service_transition = True
+            bill.save()
             services.approve_bill(organization=org, bill=bill)
             debit = BankTransaction.objects.create(organization=org, account=account, reference=f"DEMO-OUT-{idx}", date=delivered, description=f"Contoh pembayaran supplier {bill.number}", amount=-cost)
             services.reconcile_bill_payment(organization=org, bill=bill, transaction=debit, amount=cost)

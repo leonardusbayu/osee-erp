@@ -1,5 +1,5 @@
 from django.contrib.auth.models import User
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import Membership, Organization
@@ -37,7 +37,6 @@ class ImportWebTests(TestCase):
         url = reverse("import_source", args=[source.pk])
         response = self.client.get(url)
         self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF-"))
-        response.close()
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(Client().get(url).status_code, 302)
         outsider = User.objects.create_user("other-reader")
@@ -47,6 +46,7 @@ class ImportWebTests(TestCase):
         self.assertEqual(self.client.get(reverse("imports_month", args=["2026-01"])).status_code, 404)
         self.assertNotContains(self.client.get(reverse("partners")), "RAW LABEL")
 
+    @override_settings(DEBUG=True, LOCAL_SETUP_ENABLED=True, DEMO_MODE=True)
     def test_pending_import_requires_owner_signup_and_rejects_demo_login(self):
         self.run_import()
         Membership.objects.filter(organization=self.org).delete()

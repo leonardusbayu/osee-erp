@@ -1,0 +1,22 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$APP_DOMAIN} {
+	header -Server
+	@internal path /ready/ /health/
+	respond @internal 404
+	request_body {
+		max_size 12MB
+	}
+	reverse_proxy app:8000 {
+		# Incoming forwarded values are ignored by Caddy's default behavior.
+		health_uri /ready/
+		health_interval 30s
+		health_timeout 8s
+		health_headers {
+			Host {$APP_DOMAIN}
+		}
+	}
+}

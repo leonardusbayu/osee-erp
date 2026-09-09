@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="page-heading"><div><div class="eyebrow">BUKTI DAN PEMERIKSAAN PAJAK</div><h1>{{ title }}<span class="heading-dot">.</span></h1><p>{{ description }}</p></div></div>
+<div class="info-strip"><span>Data dan dokumen tetap privat di ERP. Tombol di halaman ini tidak mengirim data ke DJP atau memulai pembayaran bank.</span></div>
+{% if subject %}<section class="panel settings-section"><div class="panel-body"><strong>{{ subject }}</strong>{% if subject.amount %}<p>Nominal: {{ subject.amount }}</p>{% endif %}{% if subject.base %}<p>Dasar: {{ subject.base }} · Tarif pecahan: {{ subject.rate }} · Versi: {{ subject.calculation_version }}</p>{% endif %}</div></section>{% endif %}
+<section class="panel"><div class="panel-body"><p><a class="text-link" href="{% url 'taxes:evidence_upload' %}" target="_blank" rel="noopener">Unggah dokumen PDF terlebih dahulu →</a> · Setelah mengunggah, muat ulang halaman ini sebelum mengisi.</p><form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<div class="form-actions"><button type="submit" class="button button-primary">Simpan catatan</button><a class="button button-secondary" href="{{ back_url }}">Kembali</a></div></form></div></section>
+{% endblock %}

@@ -33,6 +33,8 @@ def annual(request):
         context = annual_readiness(request.organization, request.GET.get("year"))
     except (ValidationError, TypeError, ValueError):
         return HttpResponse("Pilih tahun yang valid.", status=400)
+    from .models import AnnualTaxWorkpaper
+    context["workpapers"] = AnnualTaxWorkpaper.objects.filter(organization=request.organization, year=context["year"]).order_by("-pk")
     return render(request, "app/annual_tax.html", context)
 
 
@@ -97,7 +99,7 @@ def chat_api(request):
     message = ChatMessage.objects.create(
         conversation=conversation, role="assistant", content=answer["answer"], mode=answer["mode"],
         source_ids=[source["id"] for source in answer["sources"]],
-        metadata={"topic": answer["topic"], "status": answer["status"], "review_required": answer["review_required"], "followups": answer["followups"], "notice": answer["notice"], "source_review_dates": {source["id"]: source["reviewed_on"] for source in answer["sources"]}, "public_topic_only": True, "prompt_version": "osee-public-process-v1"},
+        metadata={"topic": answer["topic"], "status": answer["status"], "review_required": answer["review_required"], "followups": answer["followups"], "notice": answer["notice"], "source_review_dates": {source["id"]: source["reviewed_on"] for source in answer["sources"]}, "source_cards": answer["sources"], "public_topic_only": True, "prompt_version": "osee-public-process-v2"},
     )
     conversation.updated_at = timezone.now()
     conversation.save(update_fields=["updated_at"])
@@ -114,10 +116,10 @@ def conversation_api(request, conversation_id):
     conversation = ChatConversation.objects.filter(pk=conversation_id, organization=request.organization, created_by=request.user).first()
     if not conversation:
         return error("Percakapan tidak tersedia untuk akun ini.", "not_found", 404)
-    available = {item.slug: item for item in TaxSource.objects.filter(approved=True)}
+    from .knowledge import historical_cards
     messages = [{
         "id": item.pk, "role": item.role, "content": item.content, "mode": item.mode,
-        "sources": source_cards([available[slug] for slug in item.source_ids if slug in available]),
+        "sources": historical_cards(item),
         "followups": item.metadata.get("followups", []), "status": item.metadata.get("status", ""),
         "review_required": item.metadata.get("review_required", False), "notice": item.metadata.get("notice", ""),
         "created_at": item.created_at.isoformat(),
@@ -148,11 +150,11 @@ def export(request):
     writer.writerow(["Perusahaan", csv_cell(request.organization.name), "Masa", context["period_value"]])
     for gate in context["gates"]:
         writer.writerow(["PERLU PEMERIKSAAN", gate["title"], gate["detail"]])
-    writer.writerow(["Tipe baris", "Masa", "Jenis pajak", "Arah", "Bruto dokumen", "Dasar pajak", "Tarif pecahan", "Nominal pajak", "Persiapan", "Pembayaran", "Pelaporan", "Referensi sumber", "Referensi aturan", "Pemasok", "Alasan pemeriksaan"])
+    writer.writerow(["Tipe baris", "Masa", "Jenis pajak", "Arah", "Bruto dokumen", "Dasar pajak", "Tarif pecahan", "Nominal pajak", "Persiapan", "Pembayaran", "Pelaporan", "Referensi sumber", "Referensi aturan", "Pemasok", "Alasan pemeriksaan", "Kode perhitungan", "Versi kalkulator", "Kode objek dari pemeriksa", "ID dokumen", "ID laporan profesional"])
     for item in context["obligations"]:
-        writer.writerow([csv_cell(value) for value in ["obligation_draft", item.period.strftime("%Y-%m"), item.get_tax_type_display(), item.get_direction_display(), "", item.base, item.rate, item.amount, item.get_status_display(), item.payment_status, item.filing_status, item.source_reference, item.rule_reference, "", ""]])
+        writer.writerow([csv_cell(value) for value in ["obligation_draft", item.period.strftime("%Y-%m"), item.get_tax_type_display(), item.get_direction_display(), "", item.base, item.rate, item.amount, item.get_status_display(), item.payment_status, item.filing_status, item.source_reference, item.rule_reference, "", "", item.rule_code, item.calculation_version, item.object_code, item.source_evidence_id, item.external_review_id]])
     for candidate in context["tax_candidates"]:
-        writer.writerow([csv_cell(value) for value in ["bill_tax_review_candidate", context["period_value"], "", "", candidate["gross_amount"], "", "", "", "needs_review", "", "", candidate["number"], "", candidate["supplier_name"], candidate["reason"]]])
+        writer.writerow([csv_cell(value) for value in ["bill_tax_review_candidate", context["period_value"], "", "", candidate["gross_amount"], "", "", "", "needs_review", "", "", candidate["number"], "", candidate["supplier_name"], candidate["reason"], "", "", "", "", ""]])
     if not context["obligations"] and not context["tax_candidates"]:
         writer.writerow(["Belum ada kertas kerja. Tidak berarti kewajiban pajak nihil."])
     response = HttpResponse("\ufeff" + output.getvalue(), content_type="text/csv; charset=utf-8")

@@ -13,8 +13,14 @@ from core.models import Membership
 from .models import TaxObligation, TaxProfile, TaxSource
 
 
-SOURCE_REVIEW_DATE = date(2026, 9, 7)
+SOURCE_REVIEW_DATE = date(2026, 9, 9)
 SOURCE_CATALOG = [
+    {
+        "slug": "per11-2025", "title": "PER-11/PJ/2025 — pelaporan dan pembulatan", "article": "Pasal 129; lampiran sesuai jenis SPT",
+        "url": "https://www.pajak.go.id/id/peraturan/ketentuan-pelaporan-pajak-penghasilan-pajak-pertambahan-nilai-pajak-penjualan-atas-0",
+        "summary": "Pengisian DPP dan PPh masa terkait menggunakan rupiah penuh: kurang dari setengah dibulatkan ke bawah, setengah atau lebih ke atas. Paket internal tetap perlu validasi format resmi.",
+        "topics": ["workflow", "documents", "pph23"], "effective_from": date(2025, 5, 22),
+    },
     {
         "slug": "pp20-2026", "title": "PP 20 Tahun 2026 — perubahan PP 55", "article": "Pasal II ayat (1) huruf e",
         "url": "https://pajak.go.id/id/peraturan/perubahan-atas-peraturan-pemerintah-nomor-55-tahun-2022-tentang-penyesuaian-pengaturan-di",
@@ -48,7 +54,7 @@ SOURCE_CATALOG = [
     {
         "slug": "pmk81-2024", "title": "PMK 81 Tahun 2024 — administrasi Coretax", "article": "Pasal 94, 169, 171; perhatikan perubahan dan pengecualian masa",
         "url": "https://www.pajak.go.id/id/peraturan/ketentuan-perpajakan-dalam-rangka-pelaksanaan-sistem-inti-administrasi-perpajakan",
-        "summary": "Aturan umum pembayaran PPh masa terkait tanggal 15, pelaporan tanggal 20 bulan berikutnya, dan SPT badan empat bulan setelah akhir tahun buku; pengecualian perlu kalender terverifikasi.",
+        "summary": "PPh masa terkait umumnya dibayar tanggal 15 dan dilaporkan tanggal 20 bulan berikutnya; SPT badan empat bulan setelah tahun buku. Pembayaran final omzet setor sendiri yang tervalidasi memenuhi pelaporan masa Pasal 171(4); hari libur dan pengecualian harus diperiksa.",
         "topics": ["deadline", "annual", "workflow", "payment"],
     },
     {
@@ -66,16 +72,15 @@ SOURCE_CATALOG = [
 ]
 
 
-def seed_tax_sources():
-    """Seed reviewed general guidance; never activate a company's tax policy."""
-    for source in SOURCE_CATALOG:
-        values = dict(source)
-        slug = values.pop("slug")
-        TaxSource.objects.get_or_create(slug=slug, defaults={**values, "reviewed_on": SOURCE_REVIEW_DATE, "approved": True})
+def seed_tax_sources(*, reviewed_by=None, review_reference=None):
+    """Explicitly publish reviewed source versions; never activate company policy."""
+    from .knowledge import publish_catalog
+    publish_catalog(SOURCE_CATALOG, SOURCE_REVIEW_DATE, reviewed_by=reviewed_by, review_reference=review_reference)
 
 
 def source_cards(sources):
-    return [{"id": item.slug, "title": item.title, "url": item.url, "article": item.article, "reviewed_on": item.reviewed_on.isoformat()} for item in sources]
+    from .knowledge import source_cards as cards
+    return cards(sources)
 
 
 def parse_period(value=None):
@@ -93,18 +98,21 @@ def parse_period(value=None):
 
 
 def profile_gates(organization, period):
-    profile = TaxProfile.objects.filter(organization=organization).first()
+    from .workflow import profile_for_period
+    profile = profile_for_period(organization, period)
     gates = []
     def add(code, title, detail):
         gates.append({"code": code, "title": title, "detail": detail, "severity": "review"})
     if not profile or not profile.registration_date or not profile.registration_evidence:
         add("registration", "Lengkapi dokumen pendaftaran pajak", "Unggah atau catat referensi SKT/NPWP agar pemeriksa dapat memeriksa riwayat fasilitas.")
-    if not profile or profile.regime == TaxProfile.Regime.UNDECIDED or not profile.reviewed_at:
+    if not profile or profile.regime == TaxProfile.Regime.UNDECIDED or not profile.reviewed_at or not getattr(profile, "external_review_id", None):
         add("regime", "Pemeriksa pajak belum mengaktifkan aturan", "Omzet di bawah Rp4,8 miliar tidak otomatis membuat PT biasa berhak memakai PPh final. ERP belum menghitungnya.")
     elif not profile.effective_from or period < profile.effective_from:
         add("historical_profile", "Profil belum berlaku untuk masa ini", "Status saat ini tidak membuktikan perlakuan pajak pada masa lampau.")
     elif profile.regime == TaxProfile.Regime.FINAL and (not profile.final_regime_end_date or period > profile.final_regime_end_date):
         add("final_expired", "Masa fasilitas perlu ditinjau", "Pemeriksa harus memastikan aturan setelah fasilitas berakhir sebelum nominal dihitung.")
+    elif profile.regime == TaxProfile.Regime.FINAL and profile.effective_from.year != period.year:
+        add("final_year_review", "Kelayakan final tahun ini perlu ditinjau", "Dokumen omzet dan syarat tahun sebelumnya harus diperiksa untuk setiap tahun pajak; periode fasilitas bukan persetujuan kelayakan seluruh tahun secara otomatis.")
     if not profile or not profile.vat_status_effective_from or not profile.vat_status_evidence:
         add("vat_history", "Lengkapi tanggal berlaku status PPN", "Status non-PKP saat ini belum menjadi bukti status untuk seluruh transaksi lampau.")
     elif period < profile.vat_status_effective_from:
@@ -114,6 +122,7 @@ def profile_gates(organization, period):
 
 def monthly_tax_context(organization, period=None):
     from finance.models import Bill
+    from .knowledge import current_sources
     period = parse_period(period) if not isinstance(period, date) else period.replace(day=1)
     profile, gates = profile_gates(organization, period)
     obligations = list(TaxObligation.objects.filter(organization=organization, period=period))
@@ -130,8 +139,8 @@ def monthly_tax_context(organization, period=None):
             reason = "Jenis transaksi, penerima, dan bukti perlu diperiksa sebelum menentukan pemotongan."
         elif bill.tax_amount is None:
             reason = "Status ditinjau belum disertai nominal pajak yang diputuskan pemeriksa."
-        elif bill.status == "approved" and bill.tax_amount > 0:
-            reason = "Pemotongan positif tercatat; alur jurnal pemotongan dan penyetorannya belum didukung dalam rilis ini."
+        elif bill.status == "approved" and bill.tax_amount > 0 and not hasattr(bill, "tax_decision"):
+            reason = "Pemotongan lama belum ditautkan dengan keputusan pemeriksaan dan kewajiban pajak."
         if reason:
             candidates.append({"source_kind": "bill", "bill_id": bill.pk, "number": bill.number, "supplier_name": bill.supplier.name, "gross_amount": bill.amount, "reason": reason, "status": "needs_review"})
     return {
@@ -143,7 +152,7 @@ def monthly_tax_context(organization, period=None):
         "draft_notice": "Kertas kerja DRAF. Bukan SPT, bukan XML DJP, dan belum membuktikan pajak dibayar atau dilaporkan.",
         "payment_due_standard": next_month.replace(day=15), "filing_due_standard": next_month.replace(day=20),
         "deadline_note": "Tanggal standar PPh masa terkait. Hari libur, jenis kewajiban, dan kebijakan khusus masa harus dikonfirmasi pemeriksa; belum kalender tenggat resmi.",
-        "sources": source_cards(TaxSource.objects.filter(approved=True, slug__in=["pp20-2026", "pph23-law", "pmk81-2024"])),
+        "sources": source_cards(current_sources(slugs=["pp20-2026", "pph23-law", "pmk81-2024"])),
     }
 
 
@@ -157,6 +166,14 @@ def annual_readiness(organization, year=None):
     from datetime import timedelta
     end = end_next - timedelta(days=1)
     profile, gates = profile_gates(organization, start)
+    cursor = start
+    year_gates = []
+    for _ in range(12):
+        _, monthly_gates = profile_gates(organization, cursor)
+        for gate in monthly_gates:
+            year_gates.append({**gate, "period": cursor.strftime("%Y-%m"), "title": f"{cursor:%Y-%m}: {gate['title']}"})
+        cursor = date(cursor.year + (cursor.month == 12), cursor.month % 12 + 1, 1)
+    gates = year_gates
     rows = list(TaxObligation.objects.filter(organization=organization, period__gte=start, period__lt=end_next))
     lines = JournalLine.objects.filter(organization=organization, journal__organization=organization, journal__status="posted", journal__date__gte=start, journal__date__lt=end_next, account__in=["REVENUE", "EXPENSE"])
     grouped = lines.annotate(month=TruncMonth("journal__date")).values("month", "account").annotate(debit=Sum("debit"), credit=Sum("credit"))
@@ -179,37 +196,11 @@ def annual_readiness(organization, year=None):
         {"title": "Kredit pajak dan koreksi fiskal", "status": "review", "detail": "Periksa bukti potong pelanggan, biaya fiskal, penyusutan, dan perbedaan akuntansi/pajak bersama pemeriksa."},
         {"title": "Persetujuan dan bukti pelaporan", "status": "review", "detail": "Draf belum diajukan. Bukti penerimaan resmi disimpan setelah pelaporan di saluran DJP yang disetujui."},
     ]
-    return {"year": year, "fiscal_start": start, "fiscal_end": end, "profile": profile, "gates": gates, "checks": checks, "ready": False, "readiness_label": "Persiapan — memerlukan pemeriksaan", "obligations": rows, "ledger_months": ledger_months, "book_revenue": book_revenue, "book_expenses": book_expenses, "book_profit": book_revenue - book_expenses, "closed_month_count": closed_count, "ledger_basis": "Akuntansi komersial dari jurnal terposting; bukan peredaran bruto pajak, penghasilan kena pajak, atau bukti kas lengkap. Nol berarti belum ada nilai terposting pada akun tersebut, bukan bukti aktivitas nihil.", "deadline_note": "Batas umum SPT badan: empat bulan setelah akhir tahun buku. Kalender resmi dan kebijakan khusus harus diverifikasi.", "draft_notice": "Ringkasan persiapan ini bukan SPT Tahunan dan tidak berarti telah dilaporkan.", "sources": source_cards(TaxSource.objects.filter(approved=True, slug__in=["pmk81-2024", "coretax-corporate"]))}
+    from .knowledge import current_sources
+    return {"year": year, "fiscal_start": start, "fiscal_end": end, "profile": profile, "gates": gates, "checks": checks, "ready": False, "readiness_label": "Persiapan — memerlukan pemeriksaan", "obligations": rows, "ledger_months": ledger_months, "book_revenue": book_revenue, "book_expenses": book_expenses, "book_profit": book_revenue - book_expenses, "closed_month_count": closed_count, "ledger_basis": "Akuntansi komersial dari jurnal terposting; bukan peredaran bruto pajak, penghasilan kena pajak, atau bukti kas lengkap. Nol berarti belum ada nilai terposting pada akun tersebut, bukan bukti aktivitas nihil.", "deadline_note": "Batas umum SPT badan: empat bulan setelah akhir tahun buku. Kalender resmi dan kebijakan khusus harus diverifikasi.", "draft_notice": "Ringkasan persiapan ini bukan SPT Tahunan dan tidak berarti telah dilaporkan.", "sources": source_cards(current_sources(slugs=["pmk81-2024", "coretax-corporate"]))}
 
 
-@transaction.atomic
-def approve_tax_profile(profile, actor, *, regime, effective_from, review_note, final_regime_start_date=None, final_regime_end_date=None, transition_evidence=""):
-    if not Membership.objects.filter(user=actor, organization=profile.organization, role="reviewer").exists():
-        raise PermissionDenied("Persetujuan aturan membutuhkan pemeriksa pajak yang ditunjuk.")
-    profile = TaxProfile.objects.select_for_update().get(pk=profile.pk)
-    if regime not in (TaxProfile.Regime.FINAL, TaxProfile.Regime.NORMAL):
-        raise ValidationError("Pilih aturan yang telah diperiksa.")
-    profile.regime = regime
-    profile.effective_from = effective_from
-    profile.review_note = review_note
-    profile.final_regime_start_date = final_regime_start_date
-    profile.final_regime_end_date = final_regime_end_date
-    profile.transition_evidence = transition_evidence
-    profile.reviewed_by = actor
-    profile.reviewed_at = timezone.now()
-    profile.save()
-    record(profile.organization, actor, "tax.profile.approved", profile, {"regime": regime, "effective_from": effective_from.isoformat()})
-    return profile
-
-
-@transaction.atomic
-def approve_tax_obligation(obligation, actor):
-    if not Membership.objects.filter(user=actor, organization=obligation.organization, role="reviewer").exists():
-        raise PermissionDenied("Kertas kerja memerlukan pemeriksa pajak yang ditunjuk.")
-    obligation = TaxObligation.objects.select_for_update().get(pk=obligation.pk)
-    obligation.status = TaxObligation.Status.APPROVED
-    obligation.reviewed_by = actor
-    obligation.reviewed_at = timezone.now()
-    obligation.save()
-    record(obligation.organization, actor, "tax.obligation.approved", obligation, {"period": obligation.period.isoformat(), "tax_type": obligation.tax_type, "direction": obligation.direction})
-    return obligation
+# Stable public domain-service seams used by Finance and the web layer.
+from .workflow import (approve_tax_profile, approve_tax_obligation, prepare_obligation,
+    review_bill_tax, record_external_review, upload_evidence, verify_obligation_evidence,
+    prepare_annual_workpaper, approve_annual_workpaper, verify_annual_filing)

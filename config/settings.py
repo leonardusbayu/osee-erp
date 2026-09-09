@@ -7,7 +7,7 @@ from django.core.exceptions import ImproperlyConfigured
 BASE_DIR = Path(__file__).resolve().parent.parent
 # A local .env is data, never executable shell/Python. Process values take priority.
 env_file = BASE_DIR / ".env"
-if env_file.exists():
+if os.environ.get("DJANGO_READ_DOT_ENV", "1") == "1" and env_file.exists():
     for env_line in env_file.read_text(encoding="utf-8").splitlines():
         env_line = env_line.strip()
         if not env_line or env_line.startswith("#") or "=" not in env_line:
@@ -16,12 +16,26 @@ if env_file.exists():
         env_key = env_key.strip()
         if env_key and env_key.replace("_", "").isalnum():
             os.environ.setdefault(env_key, env_value.strip().strip('"').strip("'"))
+def secret_value(name):
+    """Allow mounted Docker secrets without putting credentials in compose output."""
+    value = os.environ.get(name, "")
+    filename = os.environ.get(name + "_FILE", "")
+    if value and filename:
+        raise ImproperlyConfigured(f"Configure only {name} or {name}_FILE.")
+    if filename:
+        try:
+            value = Path(filename).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ImproperlyConfigured(f"Cannot read the configured {name} file.") from exc
+    return value
+
+
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 if DEBUG:
     (BASE_DIR / ".local").mkdir(exist_ok=True)
 DEMO_MODE = DEBUG and os.environ.get("OSEE_DEMO_MODE", "1") == "1"
 LOCAL_SETUP_ENABLED = DEBUG and os.environ.get("OSEE_LOCAL_SETUP", "1") == "1"
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
+SECRET_KEY = secret_value("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     if not DEBUG:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required outside local development.")
@@ -35,16 +49,30 @@ if not SECRET_KEY:
         except FileExistsError:
             pass
     SECRET_KEY = key_path.read_text(encoding="utf-8").strip()
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,[::1]").split(",")
+ALLOWED_HOSTS = [host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,[::1]").split(",") if host.strip()]
+OTP_ENCRYPTION_KEY = secret_value("OTP_ENCRYPTION_KEY")
+MFA_REQUIRED = os.environ.get("OSEE_MFA_REQUIRED", "0" if DEBUG else "1") == "1"
+if not DEBUG:
+    if len(SECRET_KEY) < 50 or SECRET_KEY.startswith("django-insecure-"):
+        raise ImproperlyConfigured("Production requires a generated secret of at least 50 characters.")
+    if not os.environ.get("DJANGO_ALLOWED_HOSTS") or not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:
+        raise ImproperlyConfigured("Production requires explicit DJANGO_ALLOWED_HOSTS without a wildcard.")
+    try:
+        from cryptography.fernet import Fernet
+        Fernet(OTP_ENCRYPTION_KEY.encode("ascii"))
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise ImproperlyConfigured("Production requires a persistent valid OTP_ENCRYPTION_KEY.") from exc
 INSTALLED_APPS = [
     "django.contrib.auth", "django.contrib.contenttypes", "django.contrib.sessions",
     "django.contrib.messages", "django.contrib.staticfiles", "django.contrib.humanize",
     "core", "finance", "taxes", "evidence", "imports", "director", "marketing", "webapp",
 ]
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware", "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.security.SecurityMiddleware", "whitenoise.middleware.WhiteNoiseMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware", "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware", "django.contrib.messages.middleware.MessageMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware", "core.mfa.AccountSecurityMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware", "core.middleware.SecurityHeadersMiddleware",
 ]
 ROOT_URLCONF = "config.urls"
@@ -60,14 +88,15 @@ WSGI_APPLICATION = "config.wsgi.application"
 if os.environ.get("POSTGRES_DB"):
     DATABASES = {"default": {
         "ENGINE": "django.db.backends.postgresql", "NAME": os.environ["POSTGRES_DB"],
-        "USER": os.environ.get("POSTGRES_USER", "osee"), "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+        "USER": os.environ.get("POSTGRES_USER", "osee"), "PASSWORD": secret_value("POSTGRES_PASSWORD"),
         "HOST": os.environ.get("POSTGRES_HOST", "localhost"), "PORT": os.environ.get("POSTGRES_PORT", "5432"),
-        "CONN_MAX_AGE": 60,
+        "CONN_MAX_AGE": 60, "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {"connect_timeout": 5},
     }}
 else:
     if not DEBUG:
         raise ImproperlyConfigured("Production requires PostgreSQL and explicit credentials.")
-    DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / ".local" / "osee.sqlite3", "OPTIONS": {"timeout": 20}}}
+    DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": Path(os.environ.get("DJANGO_SQLITE_PATH", str(BASE_DIR / ".local" / "osee.sqlite3"))), "OPTIONS": {"timeout": 20}}}
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 12}},
@@ -80,8 +109,18 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
-STATIC_ROOT = BASE_DIR / "staticfiles"
-MEDIA_ROOT = BASE_DIR / ".local" / "uploads"
+STATIC_ROOT = Path(os.environ.get("DJANGO_STATIC_ROOT", str(BASE_DIR / "staticfiles")))
+MEDIA_ROOT = Path(os.environ.get("DJANGO_MEDIA_ROOT", str(BASE_DIR / ".local" / "uploads")))
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
+WHITENOISE_ALLOW_ALL_ORIGINS = False
+if not DEBUG:
+    if not DATABASES["default"]["PASSWORD"]:
+        raise ImproperlyConfigured("Production PostgreSQL requires a password.")
+    if not MEDIA_ROOT.is_absolute() or MEDIA_ROOT.resolve().is_relative_to(STATIC_ROOT.resolve()):
+        raise ImproperlyConfigured("Private evidence must use an absolute path outside static files.")
 # No MEDIA_URL route: source evidence is available only through permission-checked downloads.
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL = "login"
@@ -94,6 +133,12 @@ SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_SSL_REDIRECT = not DEBUG
+# Only the deployment WSGI server interprets proxy headers, after checking the
+# exact network peer. Django must never trust arbitrary forwarded headers.
+SECURE_PROXY_SSL_HEADER = None
+USE_X_FORWARDED_HOST = False
+SECURE_REDIRECT_EXEMPT = [r"^health/$", r"^ready/$"]
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]
 SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
 SECURE_HSTS_PRELOAD = not DEBUG

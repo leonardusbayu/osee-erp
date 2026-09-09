@@ -1,0 +1,9 @@
+{% load static %}<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Verifikasi masuk · OSEE</title><link rel="stylesheet" href="{% static 'app.css' %}"></head>
+<body><main class="main-content" style="max-width:620px;margin:5vh auto">
+<img src="{% static 'brand/osee-logo.png' %}" alt="One Stop English Education" width="240">
+<div class="page-heading"><div><h1>Verifikasi masuk</h1><p>Masukkan kode dari aplikasi Authenticator atau satu kode pemulihan Anda.</p></div></div>
+<section class="panel form-panel"><form method="post">{% csrf_token %}<div class="form-fields">
+{% if error %}<div class="message message-error" role="alert">{{ error }}</div>{% endif %}
+<div class="field-row"><label for="code">Kode verifikasi</label><input id="code" name="code" autocomplete="one-time-code" maxlength="20" required autofocus><p class="field-help">Kode Authenticator berubah setiap 30 detik. Kode pemulihan hanya bisa dipakai sekali.</p></div>
+</div><div class="form-actions"><a class="button button-secondary" href="{% url 'login' %}">Mulai ulang</a><button type="submit" class="button button-primary">Verifikasi dan masuk</button></div></form></section>
+</main></body></html>

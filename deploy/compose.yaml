@@ -1,0 +1,92 @@
+name: osee
+
+services:
+  db:
+    image: postgres:17.11-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: osee
+      POSTGRES_USER: osee
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U osee -d osee']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+  app:
+    build: {context: '..', dockerfile: Dockerfile}
+    restart: unless-stopped
+    environment:
+      DJANGO_READ_DOT_ENV: '0'
+      DJANGO_DEBUG: '0'
+      OSEE_DEMO_MODE: '0'
+      OSEE_LOCAL_SETUP: '0'
+      DJANGO_ALLOWED_HOSTS: '${APP_DOMAIN:?Set APP_DOMAIN in deploy/.env}'
+      DJANGO_CSRF_TRUSTED_ORIGINS: 'https://${APP_DOMAIN}'
+      DJANGO_SECRET_KEY_FILE: /run/secrets/django_secret
+      OTP_ENCRYPTION_KEY_FILE: /run/secrets/otp_key
+      POSTGRES_DB: osee
+      POSTGRES_USER: osee
+      POSTGRES_HOST: db
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      OSEE_TRUSTED_PROXY_IP: '${OSEE_TRUSTED_PROXY_IP:-172.30.77.10}'
+      DJANGO_MEDIA_ROOT: /app/private/uploads
+    secrets: [django_secret, otp_key, postgres_password]
+    volumes: [private_data:/app/private]
+    networks: [private]
+    depends_on:
+      db: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp:size=128m,mode=1777]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+  proxy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: '${APP_DOMAIN:?Set APP_DOMAIN in deploy/.env}'
+      ACME_EMAIL: '${ACME_EMAIL:?Set ACME_EMAIL in deploy/.env}'
+    ports: ['80:80', '443:443', '443:443/udp']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      private: {ipv4_address: '${OSEE_TRUSTED_PROXY_IP:-172.30.77.10}'}
+      public: {}
+    depends_on:
+      app: {condition: service_healthy}
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+networks:
+  private:
+    internal: true
+    ipam:
+      config: [{subnet: '${OSEE_NETWORK_SUBNET:-172.30.77.0/24}'}]
+  public: {}
+
+volumes:
+  postgres_data:
+  private_data:
+  caddy_data:
+  caddy_config:
+
+secrets:
+  django_secret: {file: ./secrets/django-secret}
+  otp_key: {file: ./secrets/otp-key}
+  postgres_password: {file: ./secrets/postgres-password}

@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
 .local/
 *.sqlite3
 *.sqlite3-*
@@ -12,3 +14,12 @@ test-results/
 *.log
 .omx/
 tmp/
+.coverage*
+htmlcov/
+.ruff_cache/
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.backup

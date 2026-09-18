@@ -2,7 +2,9 @@
 
 A working local Django application for PT Langkah Pintar Nusantara, with Indonesian screens for finance, tax preparation, and Director planning. The Director module connects source-data review, growth monitoring, budgets, cash scenarios, marketing observations, and recorded business decisions. Bank connectivity, official tax filing, and several accounting workflows still need implementation and validation.
 
-The broader design is in [the finance ERP architecture](docs/FINANCE-ERP-ARCHITECTURE.md). See [implementation status](docs/IMPLEMENTATION-STATUS.md) for the current boundaries.
+Start with the [developer handoff](docs/DEVELOPER-HANDOFF.md) for a fresh clone, setup commands, the code map and remaining work. This private repository contains source and internal design documents; company databases, original financial documents and credentials are not included.
+
+The broader design is in [the finance ERP architecture](docs/FINANCE-ERP-ARCHITECTURE.md). Read the [9 September remediation results](docs/REMEDIATION-2026-09-09.md) and [Finance operating guide](docs/FINANCE-OPERATING-GUIDE.md) for the updated behavior. [Implementation status](docs/IMPLEMENTATION-STATUS.md) also retains earlier implementation history.
 
 The [Director module architecture](docs/DIRECTOR-MODULE-ARCHITECTURE.md) describes the broader target. This checkout implements an initial local module at **/director/**; live marketing connectors, verified cash availability, and automated execution are outside its current scope.
 
@@ -16,7 +18,7 @@ The demo account uses the local demo button, not a shared password. Demo access 
 
 The launcher creates `.venv`, applies migrations, and runs Django's development server on `127.0.0.1:8000` as a hidden background process. Readiness is announced after the server responds. Repeated starts reuse the verified running OSEE process; unrelated processes occupying port 8000 are left alone. Demo seeding is skipped once real source data exists. This does not deploy the application or connect to BNI or DJP. Local server logs are in `.local/logs/`; process identity is in `.local/server-state.json`. Stop and start OSEE after code changes because this launcher disables automatic reload. A manual foreground `manage.py runserver` session still ends when its terminal closes.
 
-The **Data 2026** screen contains the supplied recap's reported monthly totals, source-column prices, dated quantity cells, original PDFs, and review exceptions. It preserves date conflicts, ambiguous merged cells, and missing values. The supplier invoice is a draft bill. Recap entries are not fabricated customer invoices, bank transactions, or tax calculations. Until books are posted, the dashboard opens this imported-data view. The earlier demo is retained in an isolated organization and its account is disabled; it is not part of the company books.
+On the original company installation, the **Data 2026** screen contains the supplied recap's reported monthly totals, source-column prices, dated quantity cells, original PDFs, and review exceptions. It preserves date conflicts, ambiguous merged cells, and missing values. The supplier invoice is a draft bill. Recap entries are not fabricated customer invoices, bank transactions, or tax calculations. Until books are posted, the dashboard opens this imported-data view. The earlier demo is retained in an isolated organization and its account is disabled; it is not part of the company books.
 
 Local records are stored in `.local/osee.sqlite3`; the generated development secret is in `.local/django-secret`. Source-file storage is configured under `.local/uploads`. These files are private local state, excluded from Git. Do not delete `.local` to reset a demo if it also contains company data.
 
@@ -25,11 +27,11 @@ Local records are stored in `.local/osee.sqlite3`; the generated development sec
 1. Add a reseller/customer, supplier, product, and applicable price. Price versions are effective-dated; an invoice keeps the price it was created with.
 2. Create and issue a sales invoice. For the wholesale workflow, invoice issuance records a receivable and deferred revenue. Match the reseller's payment before recording test delivery; delivery recognizes revenue.
 3. Record supplier bills using their actual gross amounts and service dates. Supplier VAT is part of the gross bill, not an extra amount added again. Attach PDF/image source evidence to the relevant invoice or bill; tax treatment remains a separate review.
-4. Add a bank account, download the CSV template, and import bank movements. Match receipts to invoices and supported outgoing payments to supplier bills. Repeated imports are checked for duplicates and conflicting references.
+4. Add a bank account and upload an Excel/CSV e-statement. Map columns, inspect the preview and totals, then explicitly confirm the import. Match receipts to invoices, supplier payments, bank fees, transfers or customer advances. Repeated imports are checked for duplicates and conflicting references.
 5. Open the commercial reports and resolve reconciliation/close blockers. Download printable invoice or monthly-report PDFs when needed. Monthly closing locks supported accounting activity for that period.
 6. Open **Pajak bulanan** to see bill review candidates and draft workpapers, or **SPT Tahunan** to see commercial ledger totals, closed months, and preparation needs. Exported tax CSV files are explicitly drafts.
 
-The bank import accepts the application's template; it is not a claim that every BNI statement format is supported. Demo prices and the demo's zero-withholding examples are synthetic, not approved OSEE tax decisions.
+The bank import supports bounded Excel/CSV files with explicit column mapping; the actual BNI export still requires acceptance against a real statement. It is not a claim that every BNI statement format is supported. Demo prices and the demo's zero-withholding examples are synthetic, not approved OSEE tax decisions.
 
 ## Use the Director module
 
@@ -46,7 +48,7 @@ The team has three roles: **Owner/Direktur**, **Marketing**, and **Finance**. Cr
 
 **SDM and payroll are planned Finance responsibilities**, with payroll approval proposed for Owner/Direktur. Employee and salary data are intended to be restricted to Finance and Owner/Direktur, excluding Marketing. No separate HR login role is planned. The module, payroll processing, and its specific access controls are not implemented yet.
 
-Owner/Direktur can approve Director decisions and budgets and manage company/accounts. Finance can maintain financial records and prepare/review planning and marketing records, but cannot approve Director budgets/decisions, manage accounts/company settings, or close periods. Marketing can manage company marketing data but cannot access Finance, private Director reports, or Director chat. Self-approval still requires an explicit owner exception. Stored legacy `director`, `reviewer`, and `auditor` memberships retain their existing permissions and display as legacy access; they are not new-account choices and are not automatically converted. Neither Owner/Direktur nor Finance gains tax-review approval authority from this UI change. The qualified tax-review and evidence workflow remains incomplete.
+Owner/Direktur can approve Director decisions and budgets and manage company/accounts. Finance can maintain financial records and prepare/review planning and marketing records, but cannot approve Director budgets/decisions, manage accounts/company settings, or close periods. Marketing can manage company marketing data but cannot access Finance, private Director reports, or Director chat. Self-approval still requires an explicit owner exception. Stored legacy `director`, `reviewer`, and `auditor` memberships retain their existing permissions and display as legacy access; they are not new-account choices and are not automatically converted. Owner/Direktur can record a professional tax review bound to its signed evidence and decision. Neither a team role nor an AI response establishes tax competence; Finance prepares records and a documented professional review is required for the approval workflow.
 
 No Director form, CSV import, scenario, or chat action posts financial journals, moves money, activates advertising, changes accepted invoice prices, or files taxes. Budget approval and recorded decision completion do not certify that an external action happened.
 
@@ -117,7 +119,7 @@ For a manual local start:
 
 Extend through organization-scoped services, with financial mutations and their `DomainEvent` written atomically. Consumers must enforce organization scope and idempotency. The event table is an outbox foundation: **no event dispatcher, consumer worker, or retry delivery system is implemented yet**. Do not bypass posting services with direct model/bulk writes.
 
-The Windows launcher is for local development. Production still needs validated PostgreSQL concurrency, HTTPS/reverse-proxy configuration, secret management, private document storage, backup/restore, account lifecycle and MFA, monitoring, and deployment acceptance. The Dockerfile is a starting point, not a validated deployment: the Docker daemon was unavailable, so Docker runtime and PostgreSQL concurrency were not tested. BNI, DJP, and production OpenRouter behavior require separate authorized integration acceptance.
+The Windows launcher is for local development. PostgreSQL concurrency, backup/restore, account lifecycle and MFA were tested during remediation. Cloud configuration now includes Caddy HTTPS, a trusted proxy boundary, private storage and readiness checks; see [deployment and recovery](deploy/README.md). A real cloud host/domain, container runtime, off-host recovery and company cutover still require acceptance. BNI, official DJP outputs/submission and production OpenRouter behavior remain separate integration gates.
 
 ## Marketing workspace
 
@@ -134,4 +136,4 @@ Cash is **gross allocated customer receipts**, not net cash, bank balance, profi
 
 Local recommendations work immediately and are labelled **Saran dari aturan aplikasi**. Optional real AI ranking uses the configured Director OpenRouter endpoint and shared global/user budget controls, but requires the separate `MARKETING_AI_PRIVATE_AGGREGATES_ENABLED=1` deployment flag and an owner's **Pengaturan AI marketing** disclosure approval. All defaults remain off; no live provider request was made during implementation. Free text, names, raw invoices/bank details, and original questions remain local. Platform APIs and WhatsApp sending are not connected.
 
-Run `.\.venv\Scripts\python.exe manage.py test marketing` for the Marketing regression suite. The browser smoke at `tests/marketing-browser-smoke.cjs` uses only a synthetic isolated database on port 8002; prepare it with `tmp/marketing_qa_settings.py` and `tmp/marketing_qa_fixture.py`, not the company database.
+Run `.\.venv\Scripts\python.exe manage.py test marketing` for the portable Marketing regression suite. The historical browser smoke at `tests/marketing-browser-smoke.cjs` expects a synthetic database on port 8002 and local fixtures under `tmp/` that are not included in this repository. It is not a fresh-clone acceptance command; recreate isolated fixtures before using it and never target company data.

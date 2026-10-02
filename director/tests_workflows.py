@@ -74,7 +74,8 @@ class DirectorWorkflowTests(TestCase):
         budget = self.budget("100")
         old = self.entry(budget, "reservation", "80", "reserve")
         args = {"organization": self.org, "actor": self.finance, "entry": old, "reason": "Replace estimate with bill",
-                "kind": "incurred", "amount": "110", "date": DAY, "description": "Actual cost", "idempotency_key": "replacement"}
+                "kind": "incurred", "amount": "110", "date": DAY, "description": "Actual cost", "idempotency_key": "replacement",
+                "confirm_reclassification": True}
         with self.assertRaises(ValidationError):
             replace_budget_entry(**args)
         old.refresh_from_db()

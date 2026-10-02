@@ -291,7 +291,8 @@ class DirectorHTTPTests(TestCase):
         self.assertIsNone(get.context["form"].instance.pk)
         self.assertEqual(get.context["form"]["amount"].value(), Decimal("800000"))
         data = {"kind": "incurred", "amount": "700000", "date": DAY, "description": "Final cost",
-                "reference": "bill-test", "reason": "Invoice replaces estimate", "idempotency_key": "new"}
+                "reference": "bill-test", "reason": "Invoice replaces estimate", "idempotency_key": "new",
+                "confirm_reclassification": "on"}
         result = self.client.post(url, data)
         self.assert_redirect(result, "director:budget_detail", [self.budget.pk])
         old.refresh_from_db()
@@ -309,7 +310,7 @@ class DirectorHTTPTests(TestCase):
                                         description="Reservation", idempotency_key="rollback-old")
         result = self.client.post(reverse("director:budget_entry_replace", args=[self.budget.pk, old.pk]), {
             "kind": "incurred", "amount": "1000001", "date": DAY, "description": "Too large",
-            "reason": "Incorrect adjustment", "idempotency_key": "rollback-new"})
+            "reason": "Incorrect adjustment", "idempotency_key": "rollback-new", "confirm_reclassification": "on"})
         self.assertEqual(result.status_code, 200)
         self.assertTrue(result.context["form"].errors)
         old.refresh_from_db()

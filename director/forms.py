@@ -53,6 +53,24 @@ class BudgetEntryForm(DirectorModelForm):
         help_texts = {"kind": "Pembayaran tidak mengurangi anggaran lagi. Gunakan Ganti catatan ketika komitmen berubah menjadi biaya."}
 
 
+class BudgetCorrectionForm(BudgetEntryForm):
+    confirm_reclassification = forms.BooleanField(required=False,
+        label="Saya menarik seluruh fakta lama dan menggantinya dengan jenis baru",
+        help_text="Wajib bila jenis berubah. Ini koreksi fakta, bukan pelunasan. Jika biaya tetap sah, gunakan Catat pembayaran agar biaya tetap mengurangi anggaran.")
+    reason = forms.CharField(label="Alasan koreksi fakta", max_length=500, widget=forms.Textarea(attrs={"rows": 3}))
+
+
+class BudgetPaymentForm(DirectorModelForm):
+    class Meta:
+        model = BudgetEntry
+        fields = ["amount", "date", "description", "reference"]
+        labels = {"amount": "Jumlah pembayaran terkait (Rp)", "date": "Tanggal pembayaran", "description": "Keterangan pembayaran", "reference": "Referensi bukti pembayaran"}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["reference"].required = True
+
+
 class CashPlanForm(DirectorModelForm):
     class Meta:
         model = CashPlan

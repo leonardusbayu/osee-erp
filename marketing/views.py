@@ -6,7 +6,7 @@ from django.contrib import messages
 from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
-from django.db.models import Q, Sum
+from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -15,14 +15,14 @@ from django.views.decorators.http import require_GET, require_http_methods
 
 from core.access import organization_required, require_role
 from director.models import CHANNEL_CHOICES
-from finance.models import Allocation, Product
+from finance.models import Product
 from . import services
 from .ai import build_recommendations, marketing_advice
 from .analytics import GROUP_BY_CHOICES, marketing_snapshot
 from .forms import (ActionUpdateForm, AdObservationForm, CampaignForm, InvoiceLinkForm,
                     LeadForm, LeadUpdateForm, MarketingActionForm, MarketingAIPolicyForm,
-                    TeamMemberForm)
-from .models import AdDailyObservation, Campaign, Lead, MarketingAction, MarketingAIPolicy, STAGES, TeamMember
+                    TeamMemberForm, SourceCoverageForm)
+from .models import AdDailyObservation, Campaign, Lead, MarketingAction, MarketingAIPolicy, SourceCoverage, STAGES, TeamMember
 
 READ = ("owner", "director", "finance", "marketing", "auditor")
 WRITE = ("owner", "director", "finance", "marketing")
@@ -190,13 +190,15 @@ def leads(request):
     if stage:
         rows = rows.filter(stage=stage)
     if due:
+        from finance.settlement import collectible_amounts
+
         today = timezone.localdate()
         rows = rows.filter(next_follow_up__lt=today).exclude(stage="lost").select_related("invoice")
-        paid = dict(Allocation.objects.filter(organization=request.organization, transaction__organization=request.organization,
-                     invoice__organization=request.organization, transaction__date__lte=today)
-                    .values("invoice_id").annotate(total=Sum("amount")).values_list("invoice_id", "total"))
-        unpaid_ids = [lead.pk for lead in rows if not lead.invoice_id or paid.get(lead.invoice_id, Decimal(0)) < lead.invoice.total]
-        rows = rows.filter(pk__in=unpaid_ids)
+        rows = list(rows)
+        collectible = collectible_amounts(organization=request.organization,
+            invoice_ids=[lead.invoice_id for lead in rows if lead.invoice_id], as_of=today)
+        unpaid_ids = [lead.pk for lead in rows if not lead.invoice_id or collectible.get(lead.invoice_id, Decimal(0)) > 0]
+        rows = Lead.objects.filter(organization=request.organization, pk__in=unpaid_ids).select_related("campaign", "owner", "product")
     try:
         page = _page(request, rows)
     except ValidationError as exc:
@@ -266,6 +268,59 @@ def campaigns(request):
     return render(request, "marketing/campaigns.html", _context(request, "campaigns", page=page,
                   campaigns=Campaign.objects.filter(organization=request.organization).select_related("owner", "product"),
                   pagination_query=_pagination_query(request)))
+
+
+@require_GET
+@organization_required
+def coverage(request):
+    from .coverage import declaration_current
+
+    require_role(request, *READ)
+    try:
+        page = _page(request, SourceCoverage.objects.filter(organization=request.organization).select_related("campaign", "created_by"))
+    except ValidationError as exc:
+        return _bad(exc)
+    for declaration in page:
+        declaration.is_current = declaration_current(declaration)
+    return render(request, "marketing/coverage.html", _context(request, "campaigns", page=page,
+                  pagination_query=_pagination_query(request)))
+
+
+@require_http_methods(["GET", "POST"])
+@organization_required
+def coverage_create(request):
+    require_role(request, *WRITE)
+    form = SourceCoverageForm(request.POST or None, organization=request.organization)
+    if request.method == "POST" and form.is_valid():
+        try:
+            services.confirm_source_coverage(organization=request.organization, actor=request.user, **form.cleaned_data)
+            messages.success(request, "Konfirmasi cakupan pengguna disimpan beserta dasar pemeriksaannya.")
+            return redirect("marketing:coverage")
+        except ValidationError as exc:
+            _form_error(form, exc)
+    return _form_page(request, form, "Konfirmasi cakupan sumber", "Bandingkan catatan dengan seluruh laporan sumber kampanye pada interval ini.",
+                      "campaigns", "marketing:coverage", note_title="Konfirmasi manusia, bukan verifikasi platform",
+                      note="Hari tanpa catatan tidak otomatis nol. Simpan bukti cakupan dan total sumber. Perubahan data iklan membuat konfirmasi perlu ditinjau ulang. Untuk koreksi, tarik konfirmasi lama dan catat yang baru.")
+
+
+@require_http_methods(["GET", "POST"])
+@organization_required
+def coverage_withdraw(request, pk):
+    from director.forms import ReasonForm
+
+    require_role(request, *WRITE)
+    declaration = get_object_or_404(SourceCoverage, organization=request.organization, pk=pk)
+    form = ReasonForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            services.withdraw_source_coverage(organization=request.organization, actor=request.user,
+                                              declaration=declaration, **form.cleaned_data)
+            messages.success(request, "Konfirmasi cakupan ditarik. Riwayat dan alasan tetap tersimpan.")
+            return redirect("marketing:coverage")
+        except ValidationError as exc:
+            _form_error(form, exc)
+    return _form_page(request, form, "Tarik konfirmasi cakupan", declaration.reference, "campaigns", "marketing:coverage",
+                      note="Penarikan menghapus dasar rekomendasi periode yang memakai konfirmasi ini. Catatan biaya iklan tetap tersedia. Buat konfirmasi baru setelah pemeriksaan ulang.")
 
 
 def _create(request, form_class, service, title, description, nav, back, initial=None):

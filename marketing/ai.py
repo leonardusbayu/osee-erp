@@ -99,7 +99,7 @@ def build_recommendations(snapshot, question=""):
     if leads:
         paid = summary.get("cohort_paid_leads", 0)
         observed_end = date_format(date.fromisoformat(snapshot.get("observation_end", period["end"])), "j F Y")
-        add("cohort_review", "Evaluasi hambatan sampai pembayaran", f"Dari {leads} lead yang masuk pada periode ini, {paid} telah memiliki pembayaran teralokasi sampai {observed_end}.",
+        add("cohort_review", "Evaluasi hambatan sampai pembayaran", f"Dari {leads} lead yang masuk pada periode ini, {paid} telah memiliki pembayaran diterapkan ke invoice (termasuk uang muka) sampai {observed_end}.",
             "Tinjau lead berkualitas yang belum membayar menurut kampanye, produk, segmen, dan umur lead. Pisahkan hambatan penawaran, jadwal layanan, dan pembayaran; uji satu perbaikan dengan cohort pembanding.",
             "medium", "cohort_paid_conversion", summary.get("cohort_paid_conversion"), "Konversi pembayaran cohort dengan umur observasi sama membaik; hindari menyimpulkan dari cohort yang belum matang.")
     current_cash = _decimal(summary.get("cash_in"))
@@ -108,7 +108,13 @@ def build_recommendations(snapshot, question=""):
         add("cash_change", "Telusuri penurunan penerimaan periode", f"Kas bruto teratribusi {director_money(current_cash)}, dibanding {director_money(previous_cash)} pada periode sebelumnya dengan panjang sama.",
             "Pisahkan perubahan volume lead, kualitas lead, waktu pembayaran, dan kelengkapan rekonsiliasi. Periksa invoice yang belum dibayar bersama finance sebelum mengubah belanja.",
             "high", "cash_in", str(current_cash), "Penyebab penurunan terdokumentasi dan tindakan diuji terhadap penerimaan teralokasi berikutnya.")
-    if summary.get("cash_to_spend") is not None:
+    if not summary.get("source_period_complete"):
+        add("confirm_period_coverage", "Konfirmasikan cakupan sumber sebelum menilai anggaran",
+            summary.get("source_coverage_note", "Cakupan sumber periode belum dikonfirmasi."),
+            "Periksa seluruh akun dan laporan sumber untuk kampanye serta periode yang dipilih. Catat referensi bukti dan total biaya sumber; jangan menebak bahwa hari kosong berarti biaya nol.",
+            "high", "spend_known_rows", summary.get("spend_known_rows", 0),
+            "Cakupan sumber sesuai periode dan angka sumber cocok dengan catatan yang ditinjau.", "Manager marketing")
+    if summary.get("cash_to_spend") is not None and summary.get("source_period_complete"):
         add("controlled_test", "Rancang eksperimen iklan dengan hasil pembayaran", f"Rasio kas/belanja periode tercatat {summary['cash_to_spend']}×. Kas ini dapat berasal dari lead lama dan bukan ukuran laba atau sebab akibat iklan.",
             "Pilih kampanye untuk eksperimen terbatas dengan hipotesis, batas biaya yang disetujui manager, cohort pembanding, dan waktu evaluasi pembayaran. Nilai juga biaya layanan serta refund sebelum keputusan peningkatan belanja.",
             "medium", "cash_to_spend", summary["cash_to_spend"], "Bandingkan penerimaan cohort dengan usia sama dan biaya yang lengkap; jangan menjanjikan kenaikan cash-in.", "Manager marketing dan media buyer")

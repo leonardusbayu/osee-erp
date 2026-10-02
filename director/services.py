@@ -281,11 +281,12 @@ def transition_budget(*, organization, actor, budget, action, expected_version, 
     return obj
 
 
-def _entry(org, actor, budget, *, kind, amount, date, description, reference, idempotency_key, replaces=None):
+def _entry(org, actor, budget, *, kind, amount, date, description, reference, idempotency_key, replaces=None, settles=None):
     if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 100:
         raise ValidationError("Kunci permintaan budget wajib diisi, maksimal 100 karakter.")
     fields = _fields({"kind": kind, "amount": amount, "date": date, "description": description, "reference": reference}, {"kind", "amount", "date", "description", "reference"})
-    expected = {**fields, "budget_id": budget.pk, "replaces_id": replaces.pk if replaces else None}
+    expected = {**fields, "budget_id": budget.pk, "replaces_id": replaces.pk if replaces else None,
+                "settles_id": settles.pk if settles else None}
     old = BudgetEntry.objects.filter(organization=org, idempotency_key=idempotency_key).first()
     if old:
         if any(getattr(old, key) != value for key, value in expected.items()):
@@ -295,14 +296,20 @@ def _entry(org, actor, budget, *, kind, amount, date, description, reference, id
         raise ValidationError("Entri hanya dapat dicatat pada budget yang disetujui.")
     if fields["amount"] is None or fields["amount"] <= ZERO:
         raise ValidationError("Nominal entri harus lebih besar dari nol.")
+    if settles is not None:
+        if kind != "payment" or settles.budget_id != budget.pk or settles.voided_at or settles.kind not in {"incurred", "open_commitment"}:
+            raise ValidationError("Pilih biaya atau komitmen aktif dari budget yang sama.")
+        already_paid = sum((entry.amount for entry in settles.linked_payments.filter(voided_at__isnull=True)), ZERO)
+        if fields["amount"] > settles.amount - already_paid:
+            raise ValidationError("Pembayaran melebihi sisa nilai catatan terkait.")
     if kind != "payment" and (fields["date"].year, fields["date"].month) != (budget.year, budget.month):
         raise ValidationError("Tanggal biaya/komitmen harus berada pada periode budget; pembayaran boleh terjadi di periode lain.")
     if kind != "payment" and fields["amount"] > budget.available:
         raise ValidationError("Entri melebihi sisa otorisasi budget.")
     obj = _save(BudgetEntry(organization=org, created_by=actor, budget=budget, replaces=replaces,
-                            idempotency_key=idempotency_key, **fields))
+                            settles=settles, idempotency_key=idempotency_key, **fields))
     _audit(org, actor, "budget.entry_added", obj, kind=kind, amount=str(obj.amount), budget_id=budget.pk,
-           available=str(budget.available), replaces_id=obj.replaces_id)
+           available=str(budget.available), replaces_id=obj.replaces_id, settles_id=obj.settles_id)
     return obj
 
 
@@ -315,6 +322,18 @@ def add_budget_entry(*, organization, actor, budget, kind, amount, date, descrip
 
 
 @transaction.atomic
+def record_budget_payment(*, organization, actor, entry, amount, date, description, reference, idempotency_key):
+    """Record manual settlement without withdrawing the original cost/commitment."""
+    org = _org(organization, actor)
+    source = _scoped(BudgetEntry, entry, org)
+    budget = _scoped(Budget, source.budget_id, org)
+    if not isinstance(reference, str) or not reference.strip():
+        raise ValidationError("Referensi pembayaran wajib untuk catatan terkait.")
+    return _entry(org, actor, budget, kind="payment", amount=amount, date=date, description=description,
+                  reference=reference, idempotency_key=idempotency_key, settles=source)
+
+
+@transaction.atomic
 def void_budget_entry(*, organization, actor, entry, reason):
     org = _org(organization, actor)
     obj = _scoped(BudgetEntry, entry, org)
@@ -324,6 +343,8 @@ def void_budget_entry(*, organization, actor, entry, reason):
         if obj.void_reason != reason:
             raise ValidationError("Entri telah dibatalkan dengan alasan berbeda.")
         return obj
+    if obj.linked_payments.filter(voided_at__isnull=True).exists():
+        raise ValidationError("Catatan masih memiliki pembayaran terkait. Koreksi atau batalkan pembayaran tersebut dahulu agar hubungan tetap dapat ditelusuri.")
     obj.voided_at, obj.void_reason = timezone.now(), reason
     _save(obj)
     _audit(org, actor, "budget.entry_voided", obj, reason=reason)
@@ -331,19 +352,28 @@ def void_budget_entry(*, organization, actor, entry, reason):
 
 
 @transaction.atomic
-def replace_budget_entry(*, organization, actor, entry, reason, kind, amount, date, description, reference="", idempotency_key):
+def replace_budget_entry(*, organization, actor, entry, reason, kind, amount, date, description, reference="", idempotency_key,
+                         confirm_reclassification=False):
     org = _org(organization, actor)
     old = _scoped(BudgetEntry, entry, org)
     budget = _scoped(Budget, old.budget_id, org)
+    if type(confirm_reclassification) is not bool or (old.kind != kind and not confirm_reclassification):
+        raise ValidationError("Perubahan jenis memerlukan konfirmasi bahwa fakta lama ditarik seluruhnya. Untuk membayar biaya yang tetap sah, gunakan Catat pembayaran.")
     duplicate = BudgetEntry.objects.filter(organization=org, idempotency_key=idempotency_key).first()
     if duplicate:
         return _entry(org, actor, budget, kind=kind, amount=amount, date=date, description=description,
-                      reference=reference, idempotency_key=idempotency_key, replaces=old)
+                      reference=reference, idempotency_key=idempotency_key, replaces=old,
+                      settles=old.settles if kind == "payment" else None)
     if old.voided_at:
         raise ValidationError("Entri yang sudah dibatalkan tidak dapat diganti lagi.")
     void_budget_entry(organization=org, actor=actor, entry=old, reason=reason)
-    return _entry(org, actor, budget, kind=kind, amount=amount, date=date, description=description,
-                  reference=reference, idempotency_key=idempotency_key, replaces=old)
+    replacement = _entry(org, actor, budget, kind=kind, amount=amount, date=date, description=description,
+                         reference=reference, idempotency_key=idempotency_key, replaces=old,
+                         settles=old.settles if kind == "payment" else None)
+    if old.kind != kind:
+        _audit(org, actor, "budget.entry_reclassified", replacement, prior_entry_id=old.pk,
+               prior_kind=old.kind, new_kind=kind, confirmation=True, reason=reason)
+    return replacement
 
 
 @transaction.atomic

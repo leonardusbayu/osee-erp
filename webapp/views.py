@@ -33,7 +33,7 @@ from finance import services
 from evidence.forms import AttachmentForm
 from evidence.services import attach_document
 from .documents import invoice_pdf, monthly_report_pdf
-from .forms import SetupForm, InvoiceForm, PartyForm, ProductForm, PriceForm, BillForm, BankImportForm, BankAccountForm, OrganizationForm, RegistrationEvidenceForm, PriceReplacementForm, TeamMemberForm
+from .forms import SetupForm, InvoiceForm, DeliveryForm, PartyForm, ProductForm, PriceForm, BillForm, BankImportForm, BankAccountForm, OrganizationForm, RegistrationEvidenceForm, PriceReplacementForm, TeamMemberForm
 
 ZERO = Decimal("0.00")
 
@@ -282,17 +282,22 @@ def sale_issue(request, pk):
         _error(request, exc)
     return redirect("sale_detail", pk=pk)
 
-@require_POST
 @organization_required
 def sale_deliver(request, pk):
     require_role(request, "owner", "finance")
     invoice = get_object_or_404(Invoice, organization=request.organization, pk=pk)
-    try:
-        services.record_delivery(organization=request.organization, invoice=invoice, date=timezone.localdate(), actor=request.user)
-        messages.success(request, "Seluruh layanan dikonfirmasi selesai. Pendapatan tercatat satu kali.")
-    except ValidationError as exc:
-        _error(request, exc)
-    return redirect("sale_detail", pk=pk)
+    form = DeliveryForm(request.POST if request.method == "POST" else None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            services.record_delivery(organization=request.organization, invoice=invoice,
+                date=form.cleaned_data["date"], evidence=form.cleaned_data["evidence"], actor=request.user)
+            messages.success(request, "Seluruh layanan dikonfirmasi selesai pada tanggal aktual. Pendapatan tercatat satu kali.")
+            return redirect("sale_detail", pk=pk)
+        except ValidationError as exc:
+            _form_error(form, exc)
+    return render(request, "app/form.html", {"form": form, "title": "Catat layanan selesai",
+        "description": f"{invoice.number} — masukkan tanggal aktual dan bukti pelaksanaan. Tanggal jadwal tidak otomatis menjadi tanggal pengakuan pendapatan.",
+        "cancel_url": reverse("sale_detail", args=[pk]), "active_nav": "sales", "action_label": "Simpan penyelesaian aktual"})
 
 @organization_required
 def bills(request):
@@ -321,7 +326,6 @@ def bill_create(request):
         try:
             with transaction.atomic():
                 data = dict(form.cleaned_data)
-                data["number"] = next_number(request.organization, "BILL", data["date"].year)
                 bill = services.create_bill(organization=request.organization, actor=request.user, **data)
             messages.success(request, "Draf tagihan tersimpan. Pemeriksaan pajak tetap dilakukan terpisah.")
             return redirect("bills")

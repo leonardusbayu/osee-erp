@@ -51,6 +51,13 @@ class ObligationForm(EvidenceChoiceForm):
     note = forms.CharField(label="Catatan dasar, penerima, waktu terutang, dan pengecualian", max_length=4000, widget=forms.Textarea(attrs={"rows": 4}))
 
 
+class WithdrawalForm(forms.Form):
+    expected_version = forms.CharField(max_length=80, widget=forms.HiddenInput())
+    reason = forms.CharField(label="Mengapa draf ini perlu ditarik?", min_length=10, max_length=2000,
+        widget=forms.Textarea(attrs={"rows": 4}), help_text="Contoh: dokumen yang sama dicatat dua kali. Jelaskan sumber dan kesalahannya agar riwayat dapat ditelusuri.")
+    confirmed = forms.BooleanField(label="Saya telah memeriksa draf ini. Penarikan menyimpan riwayat, tidak menghapus dokumen atau mengubah jurnal, dan memerlukan paket tahunan baru bila paket lama memasukkan draf ini.")
+
+
 class BillReviewForm(ProfessionalReviewForm):
     rule_code = forms.ChoiceField(label="Keputusan pemotongan pada laporan", choices=[(key, value[0]) for key, value in RULES.items() if key != "final_turnover_005"])
     base = forms.DecimalField(label="Dasar pemotongan yang diperiksa (Rp)", min_value=0, max_digits=18, decimal_places=2)

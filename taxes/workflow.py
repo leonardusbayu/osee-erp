@@ -4,7 +4,6 @@ Owner authorization records a professional's documented decision; it does not
 certify that professional's credentials or make the owner a tax specialist.
 """
 import hashlib
-import io
 import json
 import re
 from datetime import date
@@ -16,12 +15,11 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
-from pypdf import PdfReader
 
 from core.audit import record
 from core.models import Membership, Organization
 from .models import (AnnualTaxApproval, AnnualTaxFiling, AnnualTaxWorkpaper, BillTaxDecision,
-    ExternalTaxReview, TaxEvidence, TaxObligation, TaxProfile, TaxProfileDecision, TaxVerification)
+    ExternalTaxReview, TaxEvidence, TaxObligation, TaxObligationWithdrawal, TaxProfile, TaxProfileDecision, TaxVerification)
 from .rules import CALCULATION_VERSION, calculate_annual, calculate_tax, number, validate_monthly_period
 
 
@@ -78,16 +76,12 @@ def subject_snapshot(subject):
 
 @transaction.atomic
 def upload_evidence(*, organization, actor, file):
+    from evidence.services import validate_pdf_content
     _lock(organization, actor)
     content = file.read(2 * 1024 * 1024 + 1)
     if len(content) > 2 * 1024 * 1024 or not content.startswith(b"%PDF-"):
         raise ValidationError("Unggah PDF hingga 2 MB.")
-    try:
-        reader = PdfReader(io.BytesIO(content), strict=True)
-        if reader.is_encrypted or not 1 <= len(reader.pages) <= 200:
-            raise ValueError
-    except Exception:
-        raise ValidationError("PDF harus dapat dibaca, tidak terenkripsi, dan maksimal 200 halaman.") from None
+    validate_pdf_content(content, max_pages=200)
     filename = PurePath(str(getattr(file, "name", "bukti.pdf")).replace("\\", "/")).name[:200]
     row = _save(TaxEvidence(organization=organization, uploaded_by=actor,
         original_filename=filename, content=content, sha256=hashlib.sha256(content).hexdigest()))
@@ -214,8 +208,8 @@ def approve_tax_obligation(obligation, actor, *, external_review=None):
     organization = obligation.organization
     _lock(organization, actor, approve=True)
     obligation = _scope(TaxObligation, obligation, organization, lock=True)
-    if obligation.status == "approved":
-        raise ValidationError("Kertas kerja sudah disetujui dan tidak diubah.")
+    if obligation.status not in ("draft", "review"):
+        raise ValidationError("Hanya draf aktif yang dapat disetujui; kertas kerja disetujui atau ditarik tidak diubah.")
     if external_review is None:
         raise ValidationError("Persetujuan memerlukan laporan profesional yang sesuai perhitungan.")
     review = _assert_review(organization, obligation, {"action": "approve_obligation"}, external_review)
@@ -224,6 +218,56 @@ def approve_tax_obligation(obligation, actor, *, external_review=None):
     _save(obligation)
     record(organization, actor, "tax.obligation.approved", obligation, {"external_review": review.pk, "calculation_version": obligation.calculation_version})
     return obligation
+
+
+def withdrawal_blocker(obligation):
+    """Input evidence is retained; only downstream decisions block withdrawal."""
+    if obligation.status not in ("draft", "review"):
+        return "Hanya draf yang belum disetujui dapat ditarik. Kertas kerja disetujui memerlukan koreksi formal yang ditinjau profesional."
+    if obligation.source_bill_id or BillTaxDecision.objects.filter(obligation=obligation).exists():
+        return "Kertas kerja terkait tagihan memerlukan koreksi formal bersama keputusan pajak tagihan dan pencatatan keuangannya."
+    if (obligation.reviewed_by_id or obligation.reviewed_at or obligation.external_review_id
+            or obligation.payment_reference or obligation.payment_verified_at
+            or obligation.filing_reference or obligation.filing_verified_at
+            or obligation.verifications.exists() or hasattr(obligation, "withholding_settlement")
+            or obligation.remittances.exists()):
+        return "Kertas kerja memiliki pemeriksaan atau bukti penyelesaian; gunakan koreksi formal yang ditinjau profesional."
+    return ""
+
+
+@transaction.atomic
+def withdraw_obligation(*, organization, actor, obligation, reason, expected_version):
+    _lock(organization, actor)
+    obligation = _scope(TaxObligation, obligation, organization, lock=True)
+    if not isinstance(reason, str) or not 10 <= len(reason.strip()) <= 2000:
+        raise ValidationError("Jelaskan alasan penarikan dalam 10–2.000 karakter.")
+    reason = reason.strip()
+    previous = TaxObligationWithdrawal.objects.filter(organization=organization, obligation=obligation).first()
+    if previous:
+        if previous.actor_id == actor.pk and previous.reason == reason and previous.source_version == expected_version:
+            return previous
+        raise ValidationError("Kertas kerja sudah ditarik; riwayat penarikan tidak dapat ditimpa.")
+    if not isinstance(expected_version, str) or expected_version != obligation.updated_at.isoformat():
+        raise ValidationError("Kertas kerja berubah sejak halaman dibuka. Muat ulang dan periksa kembali sebelum menariknya.")
+    blocker = withdrawal_blocker(obligation)
+    if blocker:
+        raise ValidationError(blocker)
+    snapshot = json_value({**subject_snapshot(obligation), "status": obligation.status,
+        "updated_at": obligation.updated_at, "note": obligation.note, "prepared_by_id": obligation.prepared_by_id})
+    row = TaxObligationWithdrawal(organization=organization, obligation=obligation, actor=actor,
+        reason=reason, previous_status=obligation.status, source_version=expected_version,
+        snapshot=snapshot, obligation_digest=digest(snapshot))
+    obligation.status = "withdrawn"
+    obligation._withdrawal_transition = True
+    try:
+        _save(obligation)
+    finally:
+        obligation.__dict__.pop("_withdrawal_transition", None)
+    _save(row)
+    record(organization, actor, "tax.obligation.withdrawn", row, {"obligation_id": obligation.pk,
+        "reason": reason, "source_version": expected_version, "workflow_version": row.workflow_version,
+        "obligation_digest": row.obligation_digest})
+    return row
 
 
 def bill_decision(*, rule_code, base, period, reason, object_code="", **unused):
@@ -299,8 +343,8 @@ def verify_obligation_evidence(*, organization, actor, obligation, kind, evidenc
 
 def annual_tax_snapshot(organization, fiscal_start, fiscal_end):
     """Capture immutable decisions and evidence affecting a fiscal package."""
-    obligations = TaxObligation.objects.filter(organization=organization, period__gte=fiscal_start, period__lte=fiscal_end)
-    verifications = TaxVerification.objects.filter(organization=organization, period__gte=fiscal_start, period__lte=fiscal_end)
+    obligations = TaxObligation.objects.filter(organization=organization, period__gte=fiscal_start, period__lte=fiscal_end).exclude(status="withdrawn")
+    verifications = TaxVerification.objects.filter(organization=organization, period__gte=fiscal_start, period__lte=fiscal_end).exclude(obligation__status="withdrawn")
     return json_value({
         "obligations": list(obligations.order_by("pk").values("pk", "status", "amount", "base", "rate", "rule_code", "external_review_id")),
         "verifications": list(verifications.order_by("pk").values("pk", "kind", "amount", "obligation_id", "evidence_id")),
@@ -311,6 +355,16 @@ def annual_tax_snapshot(organization, fiscal_start, fiscal_end):
 def _assert_annual_tax_snapshot(organization, workpaper, context):
     if workpaper.inputs.get("tax_snapshot") != annual_tax_snapshot(organization, context["fiscal_start"], context["fiscal_end"]):
         raise ValidationError("Bukti pajak atau keputusan profil berubah sejak persiapan; buat kertas kerja baru dan tinjau kembali.")
+
+
+def annual_snapshot_status(organization, workpaper):
+    """Read-only freshness of inputs, not certification of filing readiness."""
+    workpaper = _scope(AnnualTaxWorkpaper, workpaper, organization)
+    from .services import annual_readiness
+    context = annual_readiness(organization, workpaper.year)
+    tax_current = workpaper.inputs.get("tax_snapshot") == annual_tax_snapshot(organization, context["fiscal_start"], context["fiscal_end"])
+    book_current = json_value({key: context.get(key) for key in workpaper.book_snapshot}) == workpaper.book_snapshot
+    return {"snapshot_current": tax_current and book_current, "tax_snapshot_current": tax_current, "book_snapshot_current": book_current}
 
 
 @transaction.atomic
@@ -356,7 +410,7 @@ def approve_annual_workpaper(*, organization, actor, workpaper, external_review)
     _assert_annual_tax_snapshot(organization, workpaper, context)
     if context["gates"] or context["closed_month_count"] != 12 or context["fiscal_end"] >= timezone.localdate():
         raise ValidationError("Seluruh tahun harus tercakup profil, selesai, dan 12 bulan ditutup sebelum persetujuan tahunan.")
-    if TaxObligation.objects.filter(organization=organization, period__gte=context["fiscal_start"], period__lte=context["fiscal_end"]).exclude(status="approved").exists():
+    if TaxObligation.objects.filter(organization=organization, period__gte=context["fiscal_start"], period__lte=context["fiscal_end"]).exclude(status__in=["approved", "withdrawn"]).exists():
         raise ValidationError("Selesaikan pemeriksaan seluruh kertas kerja pajak dalam tahun ini sebelum persetujuan tahunan.")
     current = json_value({name: context[name] for name in workpaper.book_snapshot})
     if current != workpaper.book_snapshot:

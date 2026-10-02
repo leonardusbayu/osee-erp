@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from uuid import uuid4
 import tempfile
 import io
 from pypdf import PdfWriter
@@ -43,13 +44,13 @@ class FinanceWebTests(TestCase):
         invoice = Invoice.objects.get(organization=self.org)
         self.assertRedirects(response, reverse("sale_detail", args=[invoice.pk]))
         self.client.post(reverse("sale_issue", args=[invoice.pk]))
-        self.client.post(reverse("sale_deliver", args=[invoice.pk]))
+        self.client.post(reverse("sale_deliver", args=[invoice.pk]), {"date": today, "evidence": "Synthetic completed register", "confirmed": "on"})
         invoice.refresh_from_db()
         self.assertEqual(invoice.status, "issued", "Unpaid reseller cannot receive test")
         line = BankTransaction.objects.create(organization=self.org, account=self.account, reference="TEST-PAY", date=today, description="Matching receipt", amount=invoice.total)
         response = self.client.post(reverse("bank_match", args=[line.pk]), {"invoice": invoice.pk, "amount": str(invoice.total)})
         self.assertEqual(response.status_code, 302)
-        self.client.post(reverse("sale_deliver", args=[invoice.pk]))
+        self.client.post(reverse("sale_deliver", args=[invoice.pk]), {"date": today, "evidence": "Synthetic completed register", "confirmed": "on"})
         invoice.refresh_from_db()
         self.assertEqual(invoice.status, "delivered")
         balances = services.report_balances(organization=self.org)
@@ -58,7 +59,7 @@ class FinanceWebTests(TestCase):
         self.assertEqual(balances["REVENUE"], Decimal("-1020000"))
         count = Journal.objects.count()
         self.client.post(reverse("sale_issue", args=[invoice.pk]))
-        self.client.post(reverse("sale_deliver", args=[invoice.pk]))
+        self.client.post(reverse("sale_deliver", args=[invoice.pk]), {"date": today, "evidence": "Synthetic completed register", "confirmed": "on"})
         self.assertEqual(Journal.objects.count(), count)
 
     def test_forms_reject_cross_company_reference(self):
@@ -138,7 +139,7 @@ class FinanceWebTests(TestCase):
         from finance.models import AccountingPeriod, Bill
         AccountingPeriod.objects.create(organization=self.org, year=2020, month=1, closed=True)
         supplier = Party.objects.create(organization=self.org, name="Supplier", kind="supplier")
-        response = self.client.post(reverse("bill_create"), {"supplier": supplier.pk, "amount": "100000", "supplier_vat": "0", "date": "2020-01-04", "service_date": "2020-01-02", "category": "provider"})
+        response = self.client.post(reverse("bill_create"), {"supplier": supplier.pk, "supplier_reference": "SYNTHETIC-CLOSED", "submission_key": str(uuid4()), "amount": "100000", "supplier_vat": "0", "date": "2020-01-04", "service_date": "2020-01-02", "category": "provider"})
         self.assertEqual(response.status_code, 200)
         self.assertFalse(Bill.objects.exists())
         self.assertContains(response, "dikunci")

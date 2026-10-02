@@ -100,6 +100,34 @@ class AdDailyObservation(PlanningRecord):
                     raise ValidationError("Laporan tanggal ini tumpang tindih dengan total atau rincian yang sudah dicatat. Gunakan satu tingkat rincian yang konsisten.")
 
 
+class SourceCoverage(PlanningRecord):
+    """Human-reviewed campaign/source interval; never a platform verification claim."""
+    campaign = models.ForeignKey(Campaign, on_delete=models.PROTECT, related_name="source_coverage")
+    period_start = models.DateField()
+    period_end = models.DateField()
+    source = models.CharField(max_length=180)
+    reference = models.CharField(max_length=180)
+    evidence = models.TextField(max_length=4000)
+    declared_spend = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(ZERO)])
+    observation_fingerprint = models.CharField(max_length=64)
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    withdrawal_reason = models.CharField(max_length=500, blank=True)
+    scoped_references = ("campaign",)
+
+    class Meta:
+        ordering = ["-period_end", "-pk"]
+        constraints = [models.UniqueConstraint(fields=["organization", "reference"], name="marketing_source_coverage_reference")]
+
+    def clean(self):
+        super().clean()
+        old = self._old()
+        self._unchanged(old, ("campaign_id", "period_start", "period_end", "source", "reference", "evidence", "declared_spend", "observation_fingerprint"))
+        if old and old.withdrawn_at:
+            self._unchanged(old, ("withdrawn_at", "withdrawal_reason"))
+        if self.period_start and self.period_end and self.period_end < self.period_start:
+            raise ValidationError("Akhir cakupan tidak boleh sebelum awalnya.")
+
+
 class Lead(PlanningRecord):
     reference = models.CharField(max_length=120)
     name = models.CharField(max_length=150)

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from uuid import uuid4
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.models import User
@@ -57,6 +58,18 @@ class InvoiceForm(forms.Form):
             self.add_error("service_date", "Tanggal layanan tidak boleh sebelum tanggal invoice untuk pesanan baru.")
         return data
 
+class DeliveryForm(forms.Form):
+    date = BusinessDateField(label="Tanggal seluruh layanan benar-benar selesai", widget=forms.DateInput(attrs=DATE), help_text="Gunakan tanggal tes atau penyelesaian seluruh kewajiban layanan, termasuk jika baru dicatat hari ini.")
+    evidence = forms.CharField(label="Referensi bukti penyelesaian", max_length=4000, widget=forms.Textarea(attrs={"rows": 3}), help_text="Contoh: nomor berita acara atau daftar pelaksanaan tes. Lampirkan dokumen pendukung melalui rincian invoice.")
+    confirmed = forms.BooleanField(label="Saya memastikan seluruh layanan pada invoice ini sudah selesai", help_text="Satu pertemuan dari paket kursus yang masih berlangsung belum memenuhi konfirmasi ini.")
+
+    def clean_date(self):
+        value = self.cleaned_data["date"]
+        if value > timezone.localdate():
+            raise ValidationError("Tanggal penyelesaian aktual tidak boleh di masa depan.")
+        return value
+
+
 class PartyForm(forms.ModelForm):
     class Meta:
         model = Party
@@ -83,20 +96,19 @@ class PriceForm(BusinessModelForm):
         self.fields["product"].queryset = Product.objects.filter(organization=organization).order_by("name")
         self.fields["effective_from"].initial = timezone.localdate()
 
-class BillForm(BusinessModelForm):
-    class Meta:
-        model = Bill
-        fields = ["supplier", "amount", "supplier_vat", "date", "service_date", "category"]
-        labels = {"supplier": "Supplier", "amount": "Total tagihan termasuk pajak (Rp)", "supplier_vat": "PPN yang tertulis di tagihan (Rp)", "date": "Tanggal tagihan", "service_date": "Tanggal layanan", "category": "Jenis biaya"}
-        widgets = {"date": forms.DateInput(attrs=DATE), "service_date": forms.DateInput(attrs=DATE)}
-        help_texts = {"supplier_vat": "Bagian dari total tagihan. Dicatat sebagai informasi, bukan otomatis kredit pajak.", "category": "Perlakuan pajak diperiksa terpisah sebelum pembayaran dan tutup bulan."}
+class BillForm(forms.Form):
+    supplier = forms.ModelChoiceField(label="Supplier", queryset=Party.objects.none())
+    supplier_reference = forms.CharField(label="Nomor dokumen asli pemasok", max_length=160, help_text="Salin nomor invoice pemasok. Nomor internal BILL dibuat otomatis. Dokumen yang sama tidak dapat dicatat dua kali untuk pemasok yang sama.")
+    submission_key = forms.UUIDField(widget=forms.HiddenInput, initial=uuid4)
+    amount = forms.DecimalField(label="Total tagihan termasuk pajak (Rp)", max_digits=20, decimal_places=2, min_value=Decimal("0.01"))
+    supplier_vat = forms.DecimalField(label="PPN yang tertulis di tagihan (Rp)", max_digits=20, decimal_places=2, min_value=Decimal("0"), initial=0, help_text="Bagian dari total tagihan. Dicatat sebagai informasi, bukan otomatis kredit pajak.")
+    date = BusinessDateField(label="Tanggal tagihan", widget=forms.DateInput(attrs=DATE), initial=timezone.localdate)
+    service_date = BusinessDateField(label="Tanggal layanan", widget=forms.DateInput(attrs=DATE), initial=timezone.localdate)
+    category = forms.ChoiceField(label="Jenis biaya", choices=Bill._meta.get_field("category").choices, help_text="Perlakuan pajak diperiksa terpisah sebelum pembayaran dan tutup bulan.")
 
     def __init__(self, *args, organization, **kwargs):
         super().__init__(*args, **kwargs)
-        self.instance.organization = organization
         self.fields["supplier"].queryset = Party.objects.filter(organization=organization, kind="supplier").order_by("name")
-        self.fields["date"].initial = timezone.localdate()
-        self.fields["service_date"].initial = timezone.localdate()
 
 class BankImportForm(forms.Form):
     account = forms.ModelChoiceField(label="Rekening bank", queryset=BankAccount.objects.none())

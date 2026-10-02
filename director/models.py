@@ -144,9 +144,10 @@ class BudgetEntry(PlanningRecord):
     reference = models.CharField(max_length=160, blank=True)
     idempotency_key = models.CharField(max_length=100)
     replaces = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True, related_name="replacements")
+    settles = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True, related_name="linked_payments")
     voided_at = models.DateTimeField(null=True, blank=True)
     void_reason = models.CharField(max_length=500, blank=True)
-    scoped_references = ("budget", "replaces")
+    scoped_references = ("budget", "replaces", "settles")
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["organization", "idempotency_key"], name="director_budget_entry_key")]
@@ -155,11 +156,13 @@ class BudgetEntry(PlanningRecord):
     def clean(self):
         super().clean()
         old = self._old()
-        self._unchanged(old, ("budget_id", "kind", "amount", "date", "description", "reference", "idempotency_key", "replaces_id"))
+        self._unchanged(old, ("budget_id", "kind", "amount", "date", "description", "reference", "idempotency_key", "replaces_id", "settles_id"))
         if old and old.voided_at:
             self._unchanged(old, ("voided_at", "void_reason"))
         if self.replaces_id and self.replaces.budget_id != self.budget_id:
             raise ValidationError("Entri pengganti harus berada pada budget yang sama.")
+        if self.settles_id and (self.kind != "payment" or self.settles.budget_id != self.budget_id or self.settles.kind not in {"incurred", "open_commitment"}):
+            raise ValidationError("Pembayaran terkait harus merujuk biaya atau komitmen dalam budget yang sama.")
 
 
 class CashPlan(PlanningRecord):

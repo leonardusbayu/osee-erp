@@ -131,6 +131,7 @@ class TaxObligation(ValidatedModel):
         DRAFT = "draft", "Draf"
         REVIEW = "review", "Perlu pemeriksaan"
         APPROVED = "approved", "Disetujui pemeriksa"
+        WITHDRAWN = "withdrawn", "Ditarik — riwayat tersimpan"
 
     organization = models.ForeignKey("core.Organization", on_delete=models.CASCADE, related_name="tax_obligations")
     period = models.DateField(help_text="Hari pertama masa pajak")
@@ -171,12 +172,16 @@ class TaxObligation(ValidatedModel):
 
     @property
     def payment_status(self):
+        if self.status == self.Status.WITHDRAWN:
+            return "Ditarik — tidak termasuk kewajiban aktif"
         if self.direction == self.Direction.RECEIVABLE:
             return "Tidak disetor oleh OSEE"
         return "Bukti pembayaran diverifikasi" if self.pk and self.verifications.filter(kind="payment").exists() else "Pembayaran belum diverifikasi"
 
     @property
     def filing_status(self):
+        if self.status == self.Status.WITHDRAWN:
+            return "Ditarik — tidak termasuk kewajiban aktif"
         if self.pk and self.reporting_method == "validated_self_payment" and self.verifications.filter(kind="payment").exists():
             return "Pelaporan melalui pembayaran tervalidasi — PMK 81 Pasal 171(4)"
         return "Bukti pelaporan diverifikasi" if self.pk and self.verifications.filter(kind="filing").exists() else "Pelaporan belum diverifikasi"
@@ -186,11 +191,20 @@ class TaxObligation(ValidatedModel):
         errors = {}
         if self.pk:
             old = type(self).objects.filter(pk=self.pk).first()
+            if old and old.status == self.Status.WITHDRAWN:
+                raise ValidationError("Kertas kerja yang ditarik bersifat tetap; siapkan kertas kerja baru bila diperlukan.")
+            if self.status == self.Status.WITHDRAWN:
+                if not old or old.status not in (self.Status.DRAFT, self.Status.REVIEW) or not getattr(self, "_withdrawal_transition", False):
+                    raise ValidationError("Gunakan alur penarikan draf dengan alasan dan jejak audit.")
+                if any(getattr(old, field.attname) != getattr(self, field.attname) for field in self._meta.fields if field.name not in ("status", "updated_at")):
+                    raise ValidationError("Penarikan hanya mengubah status; isi kertas kerja harus tetap tersimpan.")
             if old and old.status == self.Status.APPROVED and any(getattr(old, field.attname) != getattr(self, field.attname) for field in self._meta.fields if field.name not in ("updated_at",)):
                 raise ValidationError("Kertas kerja disetujui bersifat tetap; bukti penyelesaian dicatat terpisah.")
             inputs = ("period", "tax_type", "direction", "base", "rate", "amount", "source_reference", "rule_reference")
             if old and old.status == self.Status.APPROVED and self.status == self.Status.APPROVED and old.reviewed_at == self.reviewed_at and any(getattr(old, field) != getattr(self, field) for field in inputs):
                 errors["status"] = "Perubahan kertas kerja yang disetujui memerlukan pemeriksaan ulang."
+        elif self.status == self.Status.WITHDRAWN:
+            raise ValidationError("Penarikan hanya berlaku untuk draf yang sudah tersimpan.")
         if self.period and self.period.day != 1:
             errors["period"] = "Masa pajak harus menggunakan tanggal pertama bulan."
         for field in ("base", "amount"):
@@ -281,6 +295,19 @@ class TaxEvidence(ImmutableTaxRecord):
     sha256 = models.CharField(max_length=64)
     content = models.BinaryField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class TaxObligationWithdrawal(ImmutableTaxRecord):
+    organization = models.ForeignKey("core.Organization", on_delete=models.PROTECT)
+    obligation = models.OneToOneField(TaxObligation, on_delete=models.PROTECT, related_name="withdrawal")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    reason = models.TextField(max_length=2000)
+    withdrawn_at = models.DateTimeField(auto_now_add=True)
+    workflow_version = models.CharField(max_length=60, default="tax-withdrawal-v1")
+    previous_status = models.CharField(max_length=12)
+    source_version = models.CharField(max_length=80)
+    snapshot = models.JSONField()
+    obligation_digest = models.CharField(max_length=64)
 
 
 class ExternalTaxReview(ImmutableTaxRecord):

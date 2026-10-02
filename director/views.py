@@ -19,7 +19,7 @@ from core.audit import record
 from . import services
 from .analytics import dashboard_snapshot
 from .calculators import cash_forecast
-from .forms import (ObjectiveForm, DecisionForm, BudgetForm, BudgetEntryForm,
+from .forms import (ObjectiveForm, DecisionForm, BudgetForm, BudgetEntryForm, BudgetCorrectionForm, BudgetPaymentForm,
                     CashPlanForm, CashLineForm, MarketingForm, ScenarioForm,
                     ActionForm, ReasonForm, ChatForm, AIPolicyForm, MarketingImportForm, CHANNELS)
 from .models import (Objective, Decision, Budget, BudgetEntry, CashPlan, CashPlanLine,
@@ -312,9 +312,8 @@ def budget_entry(request, pk, entry_pk=None):
     budget = get_object_or_404(Budget, organization=request.organization, pk=pk)
     entry = get_object_or_404(BudgetEntry, organization=request.organization, budget=budget, pk=entry_pk) if entry_pk else None
     initial = {field: getattr(entry, field) for field in BudgetEntryForm.Meta.fields} if entry else {"date": timezone.localdate()}
-    form = BudgetEntryForm(request.POST or None, initial=initial)
-    if entry:
-        form.fields["reason"] = ReasonForm.base_fields["reason"].__deepcopy__({})
+    form_class = BudgetCorrectionForm if entry else BudgetEntryForm
+    form = form_class(request.POST or None, initial=initial)
     key = request.POST.get("idempotency_key", "") if request.method == "POST" else str(uuid.uuid4())
     if request.method == "POST" and form.is_valid():
         try:
@@ -328,9 +327,31 @@ def budget_entry(request, pk, entry_pk=None):
             messages.success(request, "Catatan anggaran disimpan.")
             return redirect("director:budget_detail", pk=pk)
         except ValidationError as exc: _form_error(form, exc)
-    return _form_page(request, form, "Ganti catatan anggaran" if entry else "Catat penggunaan anggaran",
-                      budget.title, "budgets", reverse("director:budget_detail", args=[pk]), entry_key=key,
-                      note="Saat komitmen berubah menjadi biaya, ganti catatan sebelumnya. Pembayaran hanya mencatat penyelesaian kas dan tidak mengurangi anggaran lagi.")
+    return _form_page(request, form, "Koreksi catatan anggaran" if entry else "Catat penggunaan anggaran",
+                       budget.title, "budgets", reverse("director:budget_detail", args=[pk]), entry_key=key,
+                       note="Koreksi menarik seluruh catatan lama. Untuk pelunasan biaya atau komitmen yang masih sah, pilih Catat pembayaran pada baris asal; nilai pemakaian anggaran tetap dipertahankan.")
+
+
+@require_http_methods(["GET", "POST"])
+@organization_required
+def budget_payment(request, pk, entry_pk):
+    require_role(request, *WRITE)
+    budget = get_object_or_404(Budget, organization=request.organization, pk=pk)
+    source = get_object_or_404(BudgetEntry, organization=request.organization, budget=budget,
+                              pk=entry_pk, kind__in=("incurred", "open_commitment"), voided_at__isnull=True)
+    form = BudgetPaymentForm(request.POST or None, initial={"date": timezone.localdate()})
+    key = request.POST.get("idempotency_key", "") if request.method == "POST" else str(uuid.uuid4())
+    if request.method == "POST" and form.is_valid():
+        try:
+            services.record_budget_payment(organization=request.organization, actor=request.user, entry=source,
+                                           idempotency_key=key, **form.cleaned_data)
+            messages.success(request, "Pembayaran terkait dicatat. Biaya atau komitmen asal tetap mengurangi anggaran.")
+            return redirect("director:budget_detail", pk=pk)
+        except ValidationError as exc:
+            _form_error(form, exc)
+    return _form_page(request, form, "Catat pembayaran terkait", source.description, "budgets",
+                      reverse("director:budget_detail", args=[pk]), entry_key=key,
+                      note="Ini catatan pembayaran manual, bukan transfer bank atau rekonsiliasi Finance. Catatan asal tetap aktif; pembayaran tidak membuka kembali plafon anggaran.")
 
 
 @require_GET

@@ -8,6 +8,7 @@ import calendar
 import csv
 import io
 import re
+from uuid import UUID
 from datetime import date as Date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -21,7 +22,7 @@ from core.audit import record
 from core.models import DomainEvent, Membership, Organization
 from .models import AccountingPeriod, Allocation, BankAccount, BankTransaction, Bill, BillPayment, Invoice, Journal, JournalLine, Party, PriceVersion, Product, ZERO, assert_open_period
 from .models import (AdvanceApplication, BankOpening, BankPosting, CustomerAdvance, CustomerRefund,
-                     InvoiceCancellation, PrepaymentRelease, TaxRemittance, WithholdingSettlement)
+                     InvoiceCancellation, PrepaymentRelease, TaxRemittance, WithholdingSettlement, normalize_supplier_reference)
 
 
 CENT = Decimal("0.01")
@@ -246,16 +247,21 @@ def issue_invoice(*, organization, invoice, actor=None):
 
 
 @db_transaction.atomic
-def record_delivery(*, organization, invoice, date=None, actor=None):
+def record_delivery(*, organization, invoice, date=None, evidence="", actor=None):
     organization = _lock_org(organization)
     _authorize(organization, actor)
     invoice = _scoped(Invoice, invoice, organization, lock=True)
-    delivery_date = _date(date or invoice.service_date)
+    if not isinstance(evidence, str) or len(evidence) > 4000:
+        raise ValidationError({"evidence": "Referensi bukti penyelesaian maksimal 4.000 karakter."})
+    evidence = evidence.strip()
+    if actor is not None and (date is None or not evidence):
+        raise ValidationError("Tanggal aktual dan referensi bukti penyelesaian wajib diisi.")
+    delivery_date = _date(invoice.service_date if date is None else date)
     if delivery_date > timezone.localdate():
         raise ValidationError("Tanggal penyelesaian aktual tidak boleh di masa depan.")
     if invoice.status == "delivered":
-        if invoice.delivered_at != delivery_date:
-            raise ValidationError("Penyelesaian sudah dicatat pada tanggal lain.")
+        if invoice.delivered_at != delivery_date or invoice.delivery_evidence != evidence:
+            raise ValidationError("Penyelesaian sudah dicatat dengan tanggal atau bukti berbeda.")
         return invoice
     if invoice.status != "issued":
         raise ValidationError("Terbitkan tagihan sebelum mengakui layanan selesai.")
@@ -269,9 +275,10 @@ def record_delivery(*, organization, invoice, date=None, actor=None):
           [("DEFERRED_REVENUE", invoice.total, ZERO), ("REVENUE", ZERO, invoice.total)])
     invoice.status = "delivered"
     invoice.delivered_at = delivery_date
+    invoice.delivery_evidence = evidence
     invoice._service_transition = True
     invoice.save()
-    record(organization, actor, "finance.invoice.delivered", obj=invoice, detail={"date": delivery_date.isoformat()})
+    record(organization, actor, "finance.invoice.delivered", obj=invoice, detail={"date": delivery_date.isoformat(), "evidence": evidence})
     _event(organization, "invoice.delivered", invoice, {"invoice_id": invoice.pk, "total": str(invoice.total), "date": delivery_date.isoformat()})
     return invoice
 
@@ -375,8 +382,13 @@ def reconcile_receipt(*, organization, invoice, transaction, amount, actor=None)
 
 @db_transaction.atomic
 def create_bill(*, organization, supplier, amount, supplier_vat=ZERO, date,
-                service_date, category="expense", number, actor=None):
-    """Record a supplier document without inventing its withholding treatment."""
+                service_date, category="expense", number=None, supplier_reference="", submission_key=None, actor=None):
+    """Record a supplier document; source identity and UI replay identity differ.
+
+    Empty source references remain supported for legacy/trusted import callers;
+    the human entry form requires the original supplier reference. No historical
+    internal number is guessed to be an original document reference.
+    """
     organization = _lock_org(organization)
     _authorize(organization, actor)
     supplier = _scoped(Party, supplier, organization)
@@ -385,13 +397,34 @@ def create_bill(*, organization, supplier, amount, supplier_vat=ZERO, date,
     # must be open. Both dates stay within the supported reporting horizon.
     _month_bounds(bill_date.year, bill_date.month)
     _month_bounds(performed_date.year, performed_date.month)
-    _period(organization, bill_date)
     gross_amount = _amount(amount)
     observed_vat = _amount(supplier_vat, positive=False)
     if observed_vat < ZERO or observed_vat > gross_amount:
         raise ValidationError({"supplier_vat": "PPN pemasok harus antara nol dan total tagihan bruto."})
+    reference_key = normalize_supplier_reference(supplier_reference)
+    supplier_reference = supplier_reference.strip()
+    if submission_key is not None:
+        try:
+            submission_key = UUID(str(submission_key))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValidationError("Pengenal pengiriman formulir tidak valid. Muat ulang formulir.") from exc
+        previous = Bill.objects.filter(organization=organization, submission_key=submission_key).first()
+        if previous:
+            expected = (supplier.pk, gross_amount, observed_vat, bill_date, performed_date, category, reference_key)
+            actual = (previous.supplier_id, previous.amount, previous.supplier_vat, previous.date,
+                      previous.service_date, previous.category, previous.supplier_reference_key)
+            if actual != expected:
+                raise ValidationError("Pengiriman ini sudah tersimpan dengan rincian berbeda. Buka tagihan yang ada atau mulai formulir baru.")
+            return previous
+    if reference_key and Bill.objects.filter(organization=organization, supplier=supplier, supplier_reference_key=reference_key).exists():
+        raise ValidationError({"supplier_reference": "Nomor dokumen ini sudah dicatat untuk pemasok tersebut. Periksa tagihan yang ada."})
+    _period(organization, bill_date)
+    if number is None:
+        from core.numbering import next_number
+        number = next_number(organization, "BILL", bill_date.year)
     bill = Bill.objects.create(
         organization=organization, supplier=supplier, number=number,
+        supplier_reference=supplier_reference, submission_key=submission_key,
         amount=gross_amount, supplier_vat=observed_vat, date=bill_date,
         service_date=performed_date, category=category, status="draft",
         tax_status="review", tax_amount=None,
@@ -399,6 +432,8 @@ def create_bill(*, organization, supplier, amount, supplier_vat=ZERO, date,
     record(organization, actor, "finance.bill.created", obj=bill,
            detail={"gross_amount": str(bill.amount),
                    "supplier_vat_included": str(bill.supplier_vat),
+                   "supplier_reference": bill.supplier_reference,
+                   "submission_key": str(bill.submission_key) if bill.submission_key else None,
                    "tax_status": bill.tax_status})
     return bill
 

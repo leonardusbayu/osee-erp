@@ -2,7 +2,7 @@
 from django import forms
 
 from finance.models import Invoice
-from .models import AdDailyObservation, Campaign, Lead, MarketingAction, TeamMember, METRIC_CHOICES
+from .models import AdDailyObservation, Campaign, Lead, MarketingAction, TeamMember, SourceCoverage, METRIC_CHOICES
 
 
 class MarketingModelForm(forms.ModelForm):
@@ -50,6 +50,21 @@ class AdObservationForm(MarketingModelForm):
         fields = ["campaign", "date", "ad_name", "audience", "region", "spend", "impressions", "clicks", "source", "reference"]
         labels = {"campaign": "Kampanye", "date": "Tanggal laporan", "ad_name": "Nama / ID iklan", "audience": "Audiens", "region": "Wilayah", "spend": "Biaya iklan dilaporkan (Rp)", "impressions": "Tayangan", "clicks": "Klik", "source": "Sumber laporan", "reference": "Referensi unik laporan"}
         help_texts = {"spend": "Kosong berarti belum diketahui. Nol berarti sumber menyatakan tidak ada biaya.", "reference": "Satu referensi untuk satu baris sumber. Unggahan ulang harus mempunyai angka yang sama.", "ad_name": "Gunakan satu tingkat rincian per kampanye dan hari; jangan mencampur total dengan rincian yang termasuk di dalamnya."}
+
+
+class SourceCoverageForm(MarketingModelForm):
+    confirm_complete = forms.BooleanField(label="Saya telah memeriksa seluruh sumber/akun kampanye untuk interval ini",
+        help_text="Termasuk hari tanpa aktivitas menurut bukti sumber. Konfirmasi ini milik pengguna, bukan pemeriksaan otomatis platform; jangan membuat baris nol untuk mengisi tanggal kosong.")
+
+    class Meta:
+        model = SourceCoverage
+        fields = ["campaign", "period_start", "period_end", "source", "reference", "declared_spend", "evidence"]
+        labels = {"campaign": "Kampanye", "period_start": "Awal cakupan sumber", "period_end": "Akhir cakupan sumber",
+                  "source": "Daftar sumber / akun yang diperiksa", "reference": "Referensi unik dokumen pemeriksaan",
+                  "declared_spend": "Total belanja menurut sumber (Rp)", "evidence": "Lokasi bukti dan uraian pemeriksaan"}
+        help_texts = {"source": "Sebutkan seluruh akun/sumber kampanye yang dibandingkan, bukan hanya file yang baru diunggah.",
+                      "evidence": "Cantumkan referensi arsip laporan, cakupan tanggal, dan penjelasan selisih atau hari tidak aktif.",
+                      "declared_spend": "Harus sama dengan biaya pada catatan kampanye dalam interval ini. Nilai kosong harus dilengkapi dulu."}
 
 
 class LeadForm(MarketingModelForm):

@@ -22,35 +22,44 @@ from .models import Attachment, MAX_UPLOAD_BYTES
 ALLOWED_EXTENSIONS = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 
+def validate_pdf_content(data, *, max_pages=2000):
+    """Shared PDF policy; each caller still enforces its own byte/type limits."""
+    try:
+        reader = PdfReader(BytesIO(data), strict=True)
+        if reader.is_encrypted or not 1 <= len(reader.pages) <= max_pages:
+            raise ValueError("PDF must have readable bounded pages")
+        # Walk reachable objects once without decompressing page streams.
+        pending, seen, visited = [reader.trailer], set(), 0
+        forbidden_keys = {"/JS", "/JavaScript", "/OpenAction", "/AA", "/EmbeddedFiles", "/XFA", "/RichMediaContent"}
+        forbidden_actions = {"/JavaScript", "/Launch", "/GoToR", "/GoToE", "/SubmitForm", "/ImportData", "/Rendition"}
+        while pending:
+            item = pending.pop()
+            if isinstance(item, IndirectObject):
+                identity = (item.idnum, item.generation)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                item = item.get_object()
+            visited += 1
+            if visited > 100000:
+                raise ValueError("PDF object limit")
+            if isinstance(item, DictionaryObject):
+                if forbidden_keys.intersection(item) or str(item.get("/S", "")) in forbidden_actions or str(item.get("/Type", "")) in {"/EmbeddedFile", "/Filespec"}:
+                    raise ValueError("Active or embedded PDF content")
+                pending.extend(item.values())
+            elif isinstance(item, ArrayObject):
+                pending.extend(item)
+    except Exception as exc:
+        raise ValidationError(f"Gunakan PDF yang utuh, tanpa sandi, skrip, aksi aktif, atau lampiran; maksimal {max_pages} halaman.") from exc
+
+
 def _validate_structure(data, detected):
     """Structural validation, not a malware certificate; originals stay private."""
+    if detected == "application/pdf":
+        validate_pdf_content(data)
+        return
     try:
-        if detected == "application/pdf":
-            reader = PdfReader(BytesIO(data), strict=True)
-            if reader.is_encrypted or not 1 <= len(reader.pages) <= 2000:
-                raise ValueError("PDF must have readable bounded pages")
-            # Walk reachable objects once without decompressing page streams.
-            pending, seen, visited = [reader.trailer], set(), 0
-            forbidden_keys = {"/JS", "/JavaScript", "/OpenAction", "/AA", "/EmbeddedFiles", "/XFA", "/RichMediaContent"}
-            forbidden_actions = {"/JavaScript", "/Launch", "/GoToR", "/GoToE", "/SubmitForm", "/ImportData", "/Rendition"}
-            while pending:
-                item = pending.pop()
-                if isinstance(item, IndirectObject):
-                    identity = (item.idnum, item.generation)
-                    if identity in seen:
-                        continue
-                    seen.add(identity)
-                    item = item.get_object()
-                visited += 1
-                if visited > 100000:
-                    raise ValueError("PDF object limit")
-                if isinstance(item, DictionaryObject):
-                    if forbidden_keys.intersection(item) or str(item.get("/S", "")) in forbidden_actions or str(item.get("/Type", "")) in {"/EmbeddedFile", "/Filespec"}:
-                        raise ValueError("Active or embedded PDF content")
-                    pending.extend(item.values())
-                elif isinstance(item, ArrayObject):
-                    pending.extend(item)
-        else:
+        if detected != "application/pdf":
             expected = "PNG" if detected == "image/png" else "JPEG"
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)

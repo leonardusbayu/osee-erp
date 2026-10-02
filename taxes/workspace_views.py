@@ -111,7 +111,28 @@ def obligation_new(request):
 def obligation_detail(request, pk):
     row = get_object_or_404(TaxObligation.objects.select_related("external_review", "source_evidence"), organization=request.organization, pk=pk)
     return render(request, "taxes/obligation.html", {"obligation": row, "verifications": row.verifications.select_related("evidence", "verifier"),
-        "can_approve": request.membership.role in ("owner", "reviewer"), "active_nav": "tax"})
+        "can_approve": request.membership.role in ("owner", "reviewer"),
+        "can_prepare": request.membership.role in ("owner", "finance", "reviewer"),
+        "withdrawal_blocker": service.withdrawal_blocker(row), "active_nav": "tax"})
+
+
+@organization_required
+@require_http_methods(["GET", "POST"])
+def obligation_withdraw(request, pk):
+    service.authorize(request.organization, request.user)
+    row = get_object_or_404(TaxObligation, organization=request.organization, pk=pk)
+    form = forms.WithdrawalForm(request.POST or None, initial={"expected_version": row.updated_at.isoformat()})
+    if request.method == "POST" and form.is_valid():
+        try:
+            service.withdraw_obligation(organization=request.organization, actor=request.user, obligation=row,
+                reason=form.cleaned_data["reason"], expected_version=form.cleaned_data["expected_version"])
+        except ValidationError as exc:
+            form.add_error(None, exc.messages)
+        else:
+            messages.success(request, "Draf ditarik dan riwayatnya tersimpan. Siapkan kertas kerja yang benar bila diperlukan. Paket tahunan yang memuat draf lama perlu disiapkan dan ditinjau kembali.")
+            return redirect("taxes:obligation", pk=pk)
+    return render(request, "taxes/withdrawal.html", {"obligation": row, "form": form,
+        "withdrawal_blocker": service.withdrawal_blocker(row), "active_nav": "tax"})
 
 
 @organization_required
@@ -195,7 +216,9 @@ def annual_prepare(request):
 @require_GET
 def annual_detail(request, pk):
     row = get_object_or_404(AnnualTaxWorkpaper, organization=request.organization, pk=pk)
-    return render(request, "taxes/annual_workpaper.html", {"workpaper": row, "can_approve": request.membership.role in ("owner", "reviewer"), "active_nav": "tax"})
+    snapshot = service.annual_snapshot_status(request.organization, row)
+    return render(request, "taxes/annual_workpaper.html", {"workpaper": row, **snapshot,
+        "can_approve": snapshot["snapshot_current"] and request.membership.role in ("owner", "reviewer"), "active_nav": "tax"})
 
 
 @organization_required
@@ -238,9 +261,11 @@ def annual_verify(request, pk):
 def annual_export(request, pk):
     from .views import csv_cell
     row = get_object_or_404(AnnualTaxWorkpaper, organization=request.organization, pk=pk)
+    snapshot = service.annual_snapshot_status(request.organization, row)
     target = io.BytesIO()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         manifest = {"status": "DRAFT_REVIEW_PACKAGE_NOT_DJP_XML", "official_schema_validated": False,
+            **snapshot,
             "workpaper_id": row.pk, "year": row.year, "calculation_version": row.calculation_version,
             "approval_recorded": hasattr(row, "approval"), "filing_evidence_recorded": hasattr(row, "filing"),
             "inputs": row.inputs, "result": row.result, "book_snapshot": row.book_snapshot}
@@ -257,7 +282,8 @@ def annual_export(request, pk):
         for month in row.book_snapshot["ledger_months"]:
             writer.writerow([csv_cell(month[key]) for key in ("period", "revenue", "expenses", "book_profit", "closed")])
         archive.writestr("DRAF-buku-bulanan.csv", "\ufeff" + output.getvalue())
-        archive.writestr("BACA-DAHULU.txt", "Paket pemeriksaan internal. Bukan formulir atau XML DJP. Cocokkan lampiran, versi aturan, pembetulan, pembayaran dan penerimaan resmi pada saluran DJP. Persetujuan profesional tidak membuktikan sudah dilaporkan.")
+        warning = "Paket lama: buku atau bukti/keputusan pajak telah berubah. Siapkan versi baru dan tinjau kembali. Angka historis ini bukan keadaan terkini.\n\n" if not snapshot["snapshot_current"] else ""
+        archive.writestr("BACA-DAHULU.txt", warning + "Paket pemeriksaan internal. Bukan formulir atau XML DJP. Cocokkan lampiran, versi aturan, pembetulan, pembayaran dan penerimaan resmi pada saluran DJP. Persetujuan profesional tidak membuktikan sudah dilaporkan.")
     response = HttpResponse(target.getvalue(), content_type="application/zip")
     response["Content-Disposition"] = f'attachment; filename="DRAF-pajak-tahunan-{row.year}-versi-{row.pk}.zip"'
     response["Cache-Control"] = "no-store"

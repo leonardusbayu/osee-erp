@@ -155,6 +155,12 @@ def export(request):
         writer.writerow([csv_cell(value) for value in ["obligation_draft", item.period.strftime("%Y-%m"), item.get_tax_type_display(), item.get_direction_display(), "", item.base, item.rate, item.amount, item.get_status_display(), item.payment_status, item.filing_status, item.source_reference, item.rule_reference, "", "", item.rule_code, item.calculation_version, item.object_code, item.source_evidence_id, item.external_review_id]])
     for candidate in context["tax_candidates"]:
         writer.writerow([csv_cell(value) for value in ["bill_tax_review_candidate", context["period_value"], "", "", candidate["gross_amount"], "", "", "", "needs_review", "", "", candidate["number"], "", candidate["supplier_name"], candidate["reason"], "", "", "", "", ""]])
+    for item in context["withdrawn_obligations"]:
+        # History has no financial amount columns, so spreadsheet totals cannot
+        # silently re-add a withdrawn draft to current obligations.
+        writer.writerow([csv_cell(value) for value in ["withdrawn_history_excluded", context["period_value"],
+            item.get_tax_type_display(), item.get_direction_display(), "", "", "", "", "withdrawn", "", "",
+            item.source_reference, "", "", item.withdrawal.reason, "", "", "", item.source_evidence_id, ""]])
     if not context["obligations"] and not context["tax_candidates"]:
         writer.writerow(["Belum ada kertas kerja. Tidak berarti kewajiban pajak nihil."])
     response = HttpResponse("\ufeff" + output.getvalue(), content_type="text/csv; charset=utf-8")

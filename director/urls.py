@@ -21,6 +21,7 @@ urlpatterns = [
     path("budgets/<int:pk>/actions/<str:action>/", views.budget_action, name="budget_action"),
     path("budgets/<int:pk>/entries/new/", views.budget_entry, name="budget_entry"),
     path("budgets/<int:pk>/entries/<int:entry_pk>/replace/", views.budget_entry, name="budget_entry_replace"),
+    path("budgets/<int:pk>/entries/<int:entry_pk>/payment/", views.budget_payment, name="budget_payment"),
     path("cash/", views.cash, name="cash"),
     path("cash/new/", views.cash_edit, name="cash_create"),
     path("cash/<int:pk>/", views.cash_detail, name="cash_detail"),

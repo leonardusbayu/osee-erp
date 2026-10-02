@@ -125,7 +125,9 @@ def monthly_tax_context(organization, period=None):
     from .knowledge import current_sources
     period = parse_period(period) if not isinstance(period, date) else period.replace(day=1)
     profile, gates = profile_gates(organization, period)
-    obligations = list(TaxObligation.objects.filter(organization=organization, period=period))
+    period_rows = TaxObligation.objects.filter(organization=organization, period=period)
+    obligations = list(period_rows.exclude(status="withdrawn"))
+    withdrawn = list(period_rows.filter(status="withdrawn").select_related("withdrawal", "withdrawal__actor"))
     totals = []
     for direction, label in TaxObligation.Direction.choices:
         rows = [item for item in obligations if item.direction == direction]
@@ -146,6 +148,7 @@ def monthly_tax_context(organization, period=None):
     return {
         "period": period, "period_value": period.strftime("%Y-%m"), "profile": profile,
         "gates": gates, "profile_ready": not gates, "obligations": obligations, "tax_totals": totals,
+        "withdrawn_obligations": withdrawn, "withdrawn_count": len(withdrawn),
         "review_count": sum(item.status != "approved" for item in obligations),
         "tax_candidates": candidates, "tax_candidate_count": len(candidates),
         "unknown_amount_count": sum(item.amount is None for item in obligations),
@@ -174,7 +177,8 @@ def annual_readiness(organization, year=None):
             year_gates.append({**gate, "period": cursor.strftime("%Y-%m"), "title": f"{cursor:%Y-%m}: {gate['title']}"})
         cursor = date(cursor.year + (cursor.month == 12), cursor.month % 12 + 1, 1)
     gates = year_gates
-    rows = list(TaxObligation.objects.filter(organization=organization, period__gte=start, period__lt=end_next))
+    year_rows = TaxObligation.objects.filter(organization=organization, period__gte=start, period__lt=end_next)
+    rows = list(year_rows.exclude(status="withdrawn"))
     lines = JournalLine.objects.filter(organization=organization, journal__organization=organization, journal__status="posted", journal__date__gte=start, journal__date__lt=end_next, account__in=["REVENUE", "EXPENSE"])
     grouped = lines.annotate(month=TruncMonth("journal__date")).values("month", "account").annotate(debit=Sum("debit"), credit=Sum("credit"))
     amounts = {(row["month"].year, row["month"].month, row["account"]): row["debit"] - row["credit"] for row in grouped}
@@ -197,10 +201,10 @@ def annual_readiness(organization, year=None):
         {"title": "Persetujuan dan bukti pelaporan", "status": "review", "detail": "Draf belum diajukan. Bukti penerimaan resmi disimpan setelah pelaporan di saluran DJP yang disetujui."},
     ]
     from .knowledge import current_sources
-    return {"year": year, "fiscal_start": start, "fiscal_end": end, "profile": profile, "gates": gates, "checks": checks, "ready": False, "readiness_label": "Persiapan — memerlukan pemeriksaan", "obligations": rows, "ledger_months": ledger_months, "book_revenue": book_revenue, "book_expenses": book_expenses, "book_profit": book_revenue - book_expenses, "closed_month_count": closed_count, "ledger_basis": "Akuntansi komersial dari jurnal terposting; bukan peredaran bruto pajak, penghasilan kena pajak, atau bukti kas lengkap. Nol berarti belum ada nilai terposting pada akun tersebut, bukan bukti aktivitas nihil.", "deadline_note": "Batas umum SPT badan: empat bulan setelah akhir tahun buku. Kalender resmi dan kebijakan khusus harus diverifikasi.", "draft_notice": "Ringkasan persiapan ini bukan SPT Tahunan dan tidak berarti telah dilaporkan.", "sources": source_cards(current_sources(slugs=["pmk81-2024", "coretax-corporate"]))}
+    return {"year": year, "fiscal_start": start, "fiscal_end": end, "profile": profile, "gates": gates, "checks": checks, "ready": False, "readiness_label": "Persiapan — memerlukan pemeriksaan", "obligations": rows, "withdrawn_obligations": list(year_rows.filter(status="withdrawn").select_related("withdrawal", "withdrawal__actor")), "withdrawn_count": year_rows.filter(status="withdrawn").count(), "ledger_months": ledger_months, "book_revenue": book_revenue, "book_expenses": book_expenses, "book_profit": book_revenue - book_expenses, "closed_month_count": closed_count, "ledger_basis": "Akuntansi komersial dari jurnal terposting; bukan peredaran bruto pajak, penghasilan kena pajak, atau bukti kas lengkap. Nol berarti belum ada nilai terposting pada akun tersebut, bukan bukti aktivitas nihil.", "deadline_note": "Batas umum SPT badan: empat bulan setelah akhir tahun buku. Kalender resmi dan kebijakan khusus harus diverifikasi.", "draft_notice": "Ringkasan persiapan ini bukan SPT Tahunan dan tidak berarti telah dilaporkan.", "sources": source_cards(current_sources(slugs=["pmk81-2024", "coretax-corporate"]))}
 
 
 # Stable public domain-service seams used by Finance and the web layer.
 from .workflow import (approve_tax_profile, approve_tax_obligation, prepare_obligation,
     review_bill_tax, record_external_review, upload_evidence, verify_obligation_evidence,
-    prepare_annual_workpaper, approve_annual_workpaper, verify_annual_filing)
+    prepare_annual_workpaper, approve_annual_workpaper, verify_annual_filing, withdraw_obligation)

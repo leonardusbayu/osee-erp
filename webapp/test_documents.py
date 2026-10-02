@@ -78,6 +78,17 @@ class DocumentExportTests(SimpleTestCase):
         self.assertIn("DEMO - DATA UJI", text)
         self.assertIn("invoice belum diterbitkan", text)
 
+    def test_cancelled_invoice_never_derives_collectible_from_historical_total(self):
+        self.invoice.status = "cancelled"
+        self.invoice.outstanding_amount = Decimal("0")
+        self.invoice.cancellation = SimpleNamespace(refund_remaining=Decimal("100000"))
+        text = self.assert_valid_pdf(invoice_pdf(self.invoice))
+        self.assertIn("Saldo yang masih dapat ditagih", text)
+        self.assertIn("Sisa kewajiban pengembalian", text)
+        self.assertIn("Rp0,00", text)
+        self.assertIn("Rp100.000,00", text)
+        self.assertNotIn("Rp520.000,00", text)
+
     def test_monthly_draft_totals_and_blockers_are_explicit(self):
         text = self.assert_valid_pdf(monthly_report_pdf(self.organization, self.summary))
         for value in ("DRAF - PERIODE BELUM DITUTUP", "Rp590.000,00", "Rp1.020.000,00", "2 mutasi belum dicocokkan", "Total debit dan kredit seimbang", "bukan perhitungan dasar pajak", "30 September 2026"):

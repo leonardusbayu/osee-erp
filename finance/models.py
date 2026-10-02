@@ -1,6 +1,7 @@
 """Organization-scoped finance records. Posting is owned by finance.services."""
 
 from decimal import Decimal
+import unicodedata
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -10,6 +11,16 @@ from django.utils import timezone
 
 
 ZERO = Decimal("0.00")
+
+
+def normalize_supplier_reference(value):
+    """Retain punctuation; normalize case, Unicode width and whitespace only."""
+    if not isinstance(value, str) or len(value) > 160 or any(unicodedata.category(c).startswith("C") for c in value):
+        raise ValidationError({"supplier_reference": "Nomor dokumen pemasok maksimal 160 karakter tanpa karakter kontrol."})
+    normalized = " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+    if len(normalized) > 480:
+        raise ValidationError({"supplier_reference": "Nomor dokumen pemasok terlalu panjang setelah normalisasi (maksimal 480 karakter). Periksa nomor pada dokumen asli."})
+    return normalized
 
 
 def assert_open_period(organization_id, posting_date):
@@ -195,6 +206,7 @@ class Invoice(ScopedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     cost_estimate = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(ZERO)])
     delivered_at = models.DateField(null=True, blank=True)
+    delivery_evidence = models.TextField(max_length=4000, blank=True)
     scoped_references = ("party", "product", "price_version")
 
     class Meta:
@@ -214,6 +226,10 @@ class Invoice(ScopedModel):
             self._unchanged(old, ("number", "party_id", "product_id", "quantity", "unit_price", "price_version_id", "date", "due_date", "service_date", "cost_estimate"))
         if old and old.delivered_at != self.delivered_at and (old.status == self.Status.DELIVERED or not getattr(self, "_service_transition", False)):
             raise ValidationError("Tanggal penyelesaian aktual tidak boleh diubah setelah dicatat.")
+        if old and old.delivery_evidence != self.delivery_evidence and (old.status == self.Status.DELIVERED or not getattr(self, "_service_transition", False)):
+            raise ValidationError("Bukti penyelesaian tidak boleh diubah setelah dicatat.")
+        if self.status != self.Status.DELIVERED and (self.delivered_at or self.delivery_evidence):
+            raise ValidationError("Tanggal dan bukti penyelesaian hanya dicatat bersama pengakuan layanan selesai.")
         if ((not old and self.status != self.Status.DRAFT) or (old and old.status != self.status)) and not getattr(self, "_service_transition", False):
             raise ValidationError("Gunakan layanan keuangan untuk menerbitkan/menyelesaikan tagihan.")
         if old and old.status != self.status and (old.status, self.status) not in {("draft", "issued"), ("issued", "delivered"), ("draft", "cancelled"), ("issued", "cancelled")}:
@@ -246,6 +262,9 @@ class Invoice(ScopedModel):
 
 class Bill(ScopedModel):
     number = models.CharField(max_length=80)
+    supplier_reference = models.CharField(max_length=160, blank=True)
+    supplier_reference_key = models.CharField(max_length=480, blank=True, editable=False)
+    submission_key = models.UUIDField(null=True, blank=True, editable=False)
     supplier = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="bills")
     amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
     supplier_vat = models.DecimalField(max_digits=20, decimal_places=2, default=ZERO, validators=[MinValueValidator(ZERO)])
@@ -258,16 +277,20 @@ class Bill(ScopedModel):
     scoped_references = ("supplier",)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "supplier", "number"], name="finance_bill_supplier_number")]
+        constraints = [models.UniqueConstraint(fields=["organization", "supplier", "number"], name="finance_bill_supplier_number"),
+            models.UniqueConstraint(fields=["organization", "supplier", "supplier_reference_key"], condition=~Q(supplier_reference_key=""), name="finance_bill_supplier_source"),
+            models.UniqueConstraint(fields=["organization", "submission_key"], condition=Q(submission_key__isnull=False), name="finance_bill_submission")]
         ordering = ["-date", "-pk"]
 
     def clean(self):
         super().clean()
+        self.supplier_reference_key = normalize_supplier_reference(self.supplier_reference)
         if self.supplier_id and self.supplier.kind != Party.Kind.SUPPLIER:
             raise ValidationError({"supplier": "Pilih pemasok untuk tagihan pembelian."})
         if self.amount is not None and self.supplier_vat is not None and self.supplier_vat > self.amount:
             raise ValidationError({"supplier_vat": "PPN pemasok adalah bagian dari jumlah bruto, bukan tambahan."})
         old = self._old()
+        self._unchanged(old, ("supplier_reference", "supplier_reference_key", "submission_key"))
         if old and old.status == "approved":
             self._unchanged(old, ("number", "supplier_id", "amount", "supplier_vat", "date", "service_date", "category"))
         if ((not old and self.status != "draft") or (old and old.status != self.status)) and not getattr(self, "_service_transition", False):

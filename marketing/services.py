@@ -21,7 +21,7 @@ AD_FIELDS = {"campaign", "date", "ad_name", "audience", "region", "spend", "impr
 LEAD_FIELDS = {"reference", "name", "received_at", "campaign", "channel", "owner", "product", "party", "segment", "region", "stage", "first_response_at", "next_follow_up", "notes"}
 LEAD_UPDATES = {"stage", "first_response_at", "next_follow_up", "notes"}
 ACTION_FIELDS = {"title", "evidence", "description", "owner", "due_date", "metric_key"}
-DATES = {"date", "start_date", "end_date", "next_follow_up", "due_date"}
+DATES = {"date", "start_date", "end_date", "next_follow_up", "due_date", "period_start", "period_end"}
 TIMES = {"received_at", "first_response_at"}
 REFERENCES = {"owner": TeamMember, "campaign": Campaign, "product": Product, "party": Party}
 
@@ -186,6 +186,59 @@ def save_ad_observation(*, organization, actor, observation=None, expected_versi
         return existing
     _save(obj)
     _audit(org, actor, "ad.created", obj, values=_snapshot(obj, AD_FIELDS))
+    return obj
+
+
+@transaction.atomic
+def confirm_source_coverage(*, organization, actor, campaign, period_start, period_end, declared_spend,
+                            source, reference, evidence, confirm_complete=False):
+    from .coverage import observation_state
+    from .models import SourceCoverage
+
+    org = _org(organization, actor)
+    if confirm_complete is not True:
+        raise ValidationError("Konfirmasikan bahwa seluruh sumber kampanye pada interval ini telah diperiksa.")
+    fields = {"campaign": campaign, "period_start": period_start, "period_end": period_end,
+              "source": source, "reference": reference, "evidence": evidence}
+    data = _fields(fields, set(fields), org)
+    start, end = data["period_start"], data["period_end"]
+    if not start or not end or start > end or (end - start).days > 366 or end > timezone.localdate():
+        raise ValidationError("Gunakan interval sumber hingga hari ini, maksimal 366 hari.")
+    if not all(data[key] for key in ("source", "reference", "evidence")):
+        raise ValidationError("Sumber, referensi dokumen, dan uraian pemeriksaan wajib diisi.")
+    total = _decimal(declared_spend)
+    fingerprint, recorded = observation_state(organization=org, campaign=data["campaign"], start=start, end=end)
+    if total is None or recorded is None or recorded != total:
+        raise ValidationError("Total sumber harus sama dengan seluruh biaya tercatat pada kampanye dan interval ini. Lengkapi nilai yang kosong dahulu.")
+    old = SourceCoverage.objects.filter(organization=org, reference=data["reference"]).first()
+    if old:
+        expected = {**data, "declared_spend": total, "observation_fingerprint": fingerprint}
+        if old.withdrawn_at or any(getattr(old, key) != value for key, value in expected.items()):
+            raise ValidationError("Referensi cakupan sudah digunakan. Tarik konfirmasi lama bila salah dan catat bukti dengan referensi baru.")
+        return old
+    obj = _save(SourceCoverage(organization=org, created_by=actor, declared_spend=total,
+                              observation_fingerprint=fingerprint, **data))
+    _audit(org, actor, "coverage.confirmed", obj, campaign_id=obj.campaign_id,
+           period_start=str(start), period_end=str(end), declared_spend=str(total),
+           basis="user_confirmed_source_evidence", observation_fingerprint=fingerprint)
+    return obj
+
+
+@transaction.atomic
+def withdraw_source_coverage(*, organization, actor, declaration, reason):
+    from .models import SourceCoverage
+
+    org = _org(organization, actor)
+    obj = _scoped(SourceCoverage, declaration, org)
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+        raise ValidationError("Alasan penarikan wajib diisi, maksimal 500 karakter.")
+    if obj.withdrawn_at:
+        if obj.withdrawal_reason != reason.strip():
+            raise ValidationError("Konfirmasi telah ditarik dengan alasan berbeda.")
+        return obj
+    obj.withdrawn_at, obj.withdrawal_reason = timezone.now(), reason.strip()
+    _save(obj)
+    _audit(org, actor, "coverage.withdrawn", obj, reason=reason.strip())
     return obj
 
 

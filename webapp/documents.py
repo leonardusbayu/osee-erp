@@ -149,7 +149,7 @@ def invoice_pdf(invoice):
     statuses = {"draft": "DRAF", "issued": "Diterbitkan", "delivered": "Layanan selesai", "cancelled": "Dibatalkan"}
     status = statuses.get(invoice.status, "Perlu ditinjau")
     total, paid = invoice.total, invoice.paid_amount
-    outstanding = total - paid
+    outstanding = Decimal("0") if invoice.status in {"draft", "cancelled"} else invoice.outstanding_amount
     story = [_p(f"{invoice.number} | {status}", "heading")]
     if invoice.status in {"draft", "cancelled"}:
         story.append(_p("DRAF: invoice belum diterbitkan." if invoice.status == "draft" else "DIBATALKAN: dokumen ini tidak berlaku sebagai tagihan aktif.", "notice"))
@@ -161,11 +161,23 @@ def invoice_pdf(invoice):
         [_p("Produk / layanan", "headcell"), _p("Jumlah", "headcell"), _p("Harga satuan", "headcell"), _p("Total", "headcell")],
         [_p(invoice.product.name, "cell"), _p(invoice.quantity, "right"), _p(_money(invoice.unit_price), "right"), _p(_money(total), "right")],
     ], [WIDTH * 0.37, WIDTH * 0.10, WIDTH * 0.265, WIDTH * 0.265]), Spacer(1, 18)])
-    story.append(_table([
-        [_p("Total invoice", "label"), _p(_money(total), "right")],
-        [_p("Pembayaran dialokasikan saat ekspor", "cell"), _p(_money(paid), "right")],
-        [_p("Sisa tagihan saat ekspor", "label"), _p(_money(outstanding), "right")],
-    ], [WIDTH * 0.66, WIDTH * 0.34], header=False))
+    if invoice.status == "cancelled":
+        cancellation = getattr(invoice, "cancellation", None)
+        refund_remaining = cancellation.refund_remaining if cancellation else Decimal("0")
+        rows = [
+            [_p("Nilai invoice sebelum pembatalan", "label"), _p(_money(total), "right")],
+            [_p("Pembayaran historis yang pernah dialokasikan", "cell"), _p(_money(paid), "right")],
+            [_p("Saldo yang masih dapat ditagih", "label"), _p(_money(outstanding), "right")],
+            [_p("Sisa kewajiban pengembalian", "label"), _p(_money(refund_remaining), "right")],
+        ]
+        story.append(_p("Nilai historis bukan tagihan aktif. Pembayaran historis belum dikurangi pengembalian; sisa kewajiban pengembalian dihitung dari pembatalan dan refund yang tercatat.", "small"))
+    else:
+        rows = [
+            [_p("Total invoice", "label"), _p(_money(total), "right")],
+            [_p("Pembayaran dialokasikan saat ekspor", "cell"), _p(_money(paid), "right")],
+            [_p("Sisa tagihan saat ekspor", "label"), _p(_money(outstanding), "right")],
+        ]
+    story.append(_table(rows, [WIDTH * 0.66, WIDTH * 0.34], header=False))
     story.extend([_p("Catatan dokumen", "heading"), _p("Invoice komersial. Dokumen ini bukan Faktur Pajak. Angka pembayaran mencerminkan alokasi yang tercatat saat ekspor, bukan konfirmasi saldo rekening bank.", "small")])
     if organization.vat_status == "non_pkp":
         story.extend([Spacer(1, 7), _p("Status PPN pada profil saat ekspor: Non-PKP. Keterangan ini bukan penetapan status historis untuk tanggal transaksi.", "small")])

@@ -17,6 +17,7 @@ urlpatterns = [
     path("bills/<int:pk>/review/", workspace.bill_review, name="bill_review"),
     path("obligations/new/", workspace.obligation_new, name="obligation_new"),
     path("obligations/<int:pk>/", workspace.obligation_detail, name="obligation"),
+    path("obligations/<int:pk>/withdraw/", workspace.obligation_withdraw, name="obligation_withdraw"),
     path("obligations/<int:pk>/review/", workspace.obligation_review, name="obligation_review"),
     path("obligations/<int:pk>/verify/", workspace.obligation_verify, name="obligation_verify"),
     path("annual/prepare/", workspace.annual_prepare, name="annual_prepare"),

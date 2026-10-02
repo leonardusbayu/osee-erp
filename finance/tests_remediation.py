@@ -86,7 +86,7 @@ class FinanceRemediationTests(TestCase):
         later = self.movement(day=date(2026, 2, 10))
         f.reconcile_receipt(organization=self.org, invoice=inv, transaction=later, amount="500000", actor=self.actor)
         with self.assertRaises(ValidationError):
-            f.record_delivery(organization=self.org, invoice=inv, date=self.day, actor=self.actor)
+            f.record_delivery(organization=self.org, invoice=inv, date=self.day, evidence="Synthetic completed register", actor=self.actor)
         inv.refresh_from_db()
         self.assertEqual(inv.status, "issued")
         self.assertEqual(f.report_balances(organization=self.org)["REVENUE"], 0)
@@ -295,8 +295,8 @@ class FinanceRemediationTests(TestCase):
         self.assertEqual(first.pk, f.apply_customer_advance(**data).pk)
         self.assertEqual(AuditEvent.objects.count(), audits)
         with self.assertRaises(ValidationError):
-            f.record_delivery(organization=self.org, actor=self.actor, invoice=correct, date=self.day)
-        f.record_delivery(organization=self.org, actor=self.actor, invoice=correct, date=date(2026, 1, 11))
+            f.record_delivery(organization=self.org, actor=self.actor, invoice=correct, date=self.day, evidence="Synthetic completed register")
+        f.record_delivery(organization=self.org, actor=self.actor, invoice=correct, date=date(2026, 1, 11), evidence="Synthetic completed register")
         with self.assertRaises(ValidationError):
             f.cancel_invoice(organization=self.org, actor=self.actor, invoice=correct, date=date(2026, 1, 11), reason="After-service credits use different workflow")
 

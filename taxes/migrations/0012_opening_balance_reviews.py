@@ -1,0 +1,100 @@
+import django.db.models.deletion
+import django.utils.timezone
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("taxes", "0011_supplier_advance_reviews"),
+        ("finance", "0014_opening_balances"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="OpeningSettlementTaxReview",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("version", models.PositiveIntegerField()),
+                ("decision", models.JSONField()),
+                ("source_snapshot", models.JSONField()),
+                ("source_fingerprint", models.CharField(max_length=64)),
+                ("report_snapshot", models.JSONField()),
+                ("snapshot_hash", models.CharField(max_length=64)),
+                ("request_key", models.UUIDField()),
+                ("request_payload", models.JSONField()),
+                (
+                    "created_at",
+                    models.DateTimeField(
+                        default=django.utils.timezone.now, editable=False
+                    ),
+                ),
+                (
+                    "actor",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "organization",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="core.organization",
+                    ),
+                ),
+                (
+                    "settlement",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="tax_reviews",
+                        to="finance.openingbalancesettlement",
+                    ),
+                ),
+                (
+                    "previous",
+                    models.OneToOneField(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="next_review",
+                        to="taxes.openingsettlementtaxreview",
+                    ),
+                ),
+                (
+                    "external_review",
+                    models.OneToOneField(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="opening_settlement_decision",
+                        to="taxes.externaltaxreview",
+                    ),
+                ),
+            ],
+            options={
+                "ordering": ["version", "pk"],
+                "constraints": [
+                    models.UniqueConstraint(
+                        fields=("organization", "request_key"),
+                        name="tax_opening_review_request",
+                    ),
+                    models.UniqueConstraint(
+                        fields=("settlement", "version"),
+                        name="tax_opening_review_version",
+                    ),
+                    models.CheckConstraint(
+                        condition=models.Q(version__gte=1),
+                        name="tax_opening_review_positive",
+                    ),
+                ],
+            },
+        ),
+    ]

@@ -34,21 +34,46 @@ def pdf_text_commands(data):
 
 class DocumentExportTests(SimpleTestCase):
     def setUp(self):
-        self.organization = SimpleNamespace(pk=71, name="PT Langkah Pintar Nusantara", brand_name="OSEE", vat_status="non_pkp", is_demo=False)
+        self.organization = SimpleNamespace(
+            pk=71,
+            name="PT Langkah Pintar Nusantara",
+            brand_name="OSEE",
+            vat_status="non_pkp",
+            is_demo=False,
+        )
         self.invoice = SimpleNamespace(
             organization=self.organization,
-            party=SimpleNamespace(organization_id=71, name="Mitra <b>Utama</b> & Rekan"),
+            party=SimpleNamespace(
+                organization_id=71, name="Mitra <b>Utama</b> & Rekan"
+            ),
             product=SimpleNamespace(organization_id=71, name="TOEFL ITP"),
-            number="INV-2026-0017", quantity=2, unit_price=Decimal("510000.00"),
-            date=date(2026, 9, 1), due_date=date(2026, 9, 15), service_date=date(2026, 9, 10),
-            status="issued", total=Decimal("1020000.00"), paid_amount=Decimal("500000.00"), outstanding_amount=Decimal("520000.00"),
+            number="INV-2026-0017",
+            quantity=2,
+            unit_price=Decimal("510000.00"),
+            date=date(2026, 9, 1),
+            due_date=date(2026, 9, 15),
+            service_date=date(2026, 9, 10),
+            status="issued",
+            total=Decimal("1020000.00"),
+            paid_amount=Decimal("500000.00"),
+            outstanding_amount=Decimal("520000.00"),
         )
         self.summary = {
-            "organization_id": 71, "year": 2026, "month": 9,
-            "start": date(2026, 9, 1), "end": date(2026, 9, 30),
-            "revenue": Decimal("1020000.00"), "expenses": Decimal("430000.00"), "profit": Decimal("590000.00"),
-            "balances": {"BANK": Decimal("590000.00"), "REVENUE": Decimal("-1020000.00"), "EXPENSE": Decimal("430000.00")},
-            "closed": False, "blockers": ["2 mutasi belum dicocokkan"],
+            "organization_id": 71,
+            "year": 2026,
+            "month": 9,
+            "start": date(2026, 9, 1),
+            "end": date(2026, 9, 30),
+            "revenue": Decimal("1020000.00"),
+            "expenses": Decimal("430000.00"),
+            "profit": Decimal("590000.00"),
+            "balances": {
+                "BANK": Decimal("590000.00"),
+                "REVENUE": Decimal("-1020000.00"),
+                "EXPENSE": Decimal("430000.00"),
+            },
+            "closed": False,
+            "blockers": ["2 mutasi belum dicocokkan"],
         }
 
     def assert_valid_pdf(self, content):
@@ -60,7 +85,15 @@ class DocumentExportTests(SimpleTestCase):
 
     def test_invoice_has_snapshot_amounts_and_escaped_names(self):
         text = self.assert_valid_pdf(invoice_pdf(self.invoice))
-        for value in ("INV-2026-0017", "Rp1.020.000,00", "Rp500.000,00", "Rp520.000,00", "Mitra <b>Utama</b> & Rekan", "bukan Faktur Pajak", "bukan penetapan status historis"):
+        for value in (
+            "INV-2026-0017",
+            "Rp1.020.000,00",
+            "Rp500.000,00",
+            "Rp520.000,00",
+            "Mitra <b>Utama</b> & Rekan",
+            "bukan Faktur Pajak",
+            "bukan penetapan status historis",
+        ):
             self.assertIn(value, text)
         self.assertNotIn("DEMO - DATA UJI", text)
 
@@ -80,8 +113,8 @@ class DocumentExportTests(SimpleTestCase):
 
     def test_cancelled_invoice_never_derives_collectible_from_historical_total(self):
         self.invoice.status = "cancelled"
-        self.invoice.outstanding_amount = Decimal("0")
-        self.invoice.cancellation = SimpleNamespace(refund_remaining=Decimal("100000"))
+        self.invoice.outstanding_amount = Decimal(0)
+        self.invoice.cancellation = SimpleNamespace(refund_remaining=Decimal(100000))
         text = self.assert_valid_pdf(invoice_pdf(self.invoice))
         self.assertIn("Saldo yang masih dapat ditagih", text)
         self.assertIn("Sisa kewajiban pengembalian", text)
@@ -90,8 +123,18 @@ class DocumentExportTests(SimpleTestCase):
         self.assertNotIn("Rp520.000,00", text)
 
     def test_monthly_draft_totals_and_blockers_are_explicit(self):
-        text = self.assert_valid_pdf(monthly_report_pdf(self.organization, self.summary))
-        for value in ("DRAF - PERIODE BELUM DITUTUP", "Rp590.000,00", "Rp1.020.000,00", "2 mutasi belum dicocokkan", "Total debit dan kredit seimbang", "bukan perhitungan dasar pajak", "30 September 2026"):
+        text = self.assert_valid_pdf(
+            monthly_report_pdf(self.organization, self.summary)
+        )
+        for value in (
+            "DRAF - PERIODE BELUM DITUTUP",
+            "Rp590.000,00",
+            "Rp1.020.000,00",
+            "2 mutasi belum dicocokkan",
+            "Total debit dan kredit seimbang",
+            "bukan perhitungan dasar pajak",
+            "30 September 2026",
+        ):
             self.assertIn(value, text)
 
     def test_monthly_scope_mismatch_is_rejected(self):
@@ -101,15 +144,22 @@ class DocumentExportTests(SimpleTestCase):
 
     def test_unbalanced_trial_balance_is_never_labelled_balanced(self):
         self.summary["balances"]["BANK"] += Decimal("0.01")
-        text = self.assert_valid_pdf(monthly_report_pdf(self.organization, self.summary))
+        text = self.assert_valid_pdf(
+            monthly_report_pdf(self.organization, self.summary)
+        )
         self.assertIn("neraca saldo belum seimbang", text)
         self.assertIn("Rp0,01", text)
         self.assertNotIn("Total debit dan kredit seimbang", text)
 
     def test_closed_report_and_long_blockers_paginate(self):
         self.summary["closed"] = True
-        self.summary["blockers"] = [f"Tinjau dokumen sumber nomor {i}: <img src='private'> & tanggal pencatatan." for i in range(75)]
-        text = self.assert_valid_pdf(monthly_report_pdf(self.organization, self.summary))
+        self.summary["blockers"] = [
+            f"Tinjau dokumen sumber nomor {i}: <img src='private'> & tanggal pencatatan."
+            for i in range(75)
+        ]
+        text = self.assert_valid_pdf(
+            monthly_report_pdf(self.organization, self.summary)
+        )
         self.assertIn("PERIODE DITUTUP", text)
         self.assertNotIn("DRAF - PERIODE BELUM DITUTUP", text)
         self.assertIn("sumber nomor 74", text)
@@ -121,7 +171,10 @@ class DocumentExportTests(SimpleTestCase):
             monthly_report_pdf(self.organization, self.summary)
 
     def test_accepted_multiline_names_do_not_overflow_invoice_cells(self):
-        for related, model in ((self.invoice.party, Party), (self.invoice.product, Product)):
+        for related, model in (
+            (self.invoice.party, Party),
+            (self.invoice.product, Product),
+        ):
             with self.subTest(model=model.__name__):
                 field = model._meta.get_field("name")
                 multiline_name = ("X\n" * (field.max_length // 2)).rstrip()
@@ -140,11 +193,15 @@ class DocumentExportTests(SimpleTestCase):
         field = Organization._meta.get_field("name")
         self.organization.name = ("X\n" * (field.max_length // 2)).rstrip()
         field.clean(self.organization.name, None)
-        self.summary["tax_profile_gates"] = [{
-            "title": "Dokumen perlu ditinjau",
-            "detail": "Periksa bukti sumber\r\n\t" * 250 + "AKHIR CATATAN",
-        }]
-        text = self.assert_valid_pdf(monthly_report_pdf(self.organization, self.summary))
+        self.summary["tax_profile_gates"] = [
+            {
+                "title": "Dokumen perlu ditinjau",
+                "detail": "Periksa bukti sumber\r\n\t" * 250 + "AKHIR CATATAN",
+            }
+        ]
+        text = self.assert_valid_pdf(
+            monthly_report_pdf(self.organization, self.summary)
+        )
         self.assertIn("X X X X", text)
         self.assertIn("AKHIR CATATAN", text)
         self.assertIn("Halaman 2", text)

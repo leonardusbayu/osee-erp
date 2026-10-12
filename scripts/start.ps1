@@ -1,4 +1,4 @@
-param([switch]$Stop, [switch]$Status)
+param([switch]$Stop, [switch]$Status, [ValidateRange(1024, 65525)][int]$Port = 8000)
 
 $ErrorActionPreference = 'Stop'
 $oseeRoot = Split-Path -Parent $PSScriptRoot
@@ -9,29 +9,34 @@ $oseeLocal = Join-Path $oseeRoot '.local'
 $oseeStateFile = Join-Path $oseeLocal 'server-state.json'
 $oseeLogDir = Join-Path $oseeLocal 'logs'
 New-Item -ItemType Directory -Path $oseeLocal -Force | Out-Null
+$oseePort = $Port
 
-function Get-OseeListener {
-    return Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -First 1
+function Get-OseeListener([int]$ListenPort = $oseePort) {
+    return Get-NetTCPConnection -State Listen -LocalPort $ListenPort -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
 function Get-OseeIdentity([int]$ProcessId) {
     $oseeProcess = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $oseeProcess) { return $null }
     $oseeCim = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
-    $oseeExpected = [regex]::Escape($oseeManage) + '"?\s+runserver\s+127\.0\.0\.1:8000\s+--noreload(?:\s|$)'
-    if (-not $oseeCim -or $oseeCim.CommandLine -notmatch $oseeExpected) { return $null }
+    $oseeExpected = '^\s*"?' + [regex]::Escape($oseeProcess.Path) + '"?\s+(?:-u\s+)?"?' +
+        [regex]::Escape($oseeManage) + '"?\s+runserver\s+127\.0\.0\.1:(?<oseeListenPort>[0-9]{1,5})\s+--noreload\s*$'
+    if (-not $oseeCim -or $oseeProcess.ProcessName -notmatch '^python(?:w|[0-9.]*)?$' -or $oseeCim.CommandLine -notmatch $oseeExpected) { return $null }
+    $oseeIdentityPort = [int]$Matches.oseeListenPort
+    if ($oseeIdentityPort -lt 1024 -or $oseeIdentityPort -gt 65535) { return $null }
     return [pscustomobject]@{
         pid = $oseeProcess.Id
         started_at = $oseeProcess.StartTime.ToUniversalTime().ToString('o')
         executable = $oseeProcess.Path
         command = $oseeCim.CommandLine
         parent_pid = $oseeCim.ParentProcessId
+        port = $oseeIdentityPort
     }
 }
 
 function Test-OseeHealth {
     try {
-        $oseeResponse = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health/' -TimeoutSec 2
+        $oseeResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$oseePort/health/" -TimeoutSec 2
         return $oseeResponse.StatusCode -eq 200 -and ($oseeResponse.Content | ConvertFrom-Json).status -eq 'ok'
     } catch { return $false }
 }
@@ -39,7 +44,7 @@ function Test-OseeHealth {
 function Save-OseeIdentity($Identity) {
     $oseeParent = Get-OseeIdentity ([int]$Identity.parent_pid)
     if ($oseeParent -and [DateTime]::Parse($oseeParent.started_at) -gt [DateTime]::Parse($Identity.started_at)) { $oseeParent = $null }
-    @{ root = $oseeRoot; port = 8000; server = $Identity; launcher = $oseeParent } |
+    @{ root = $oseeRoot; port = $Identity.port; server = $Identity; launcher = $oseeParent } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $oseeStateFile -Encoding UTF8
 }
 
@@ -83,34 +88,53 @@ do {
 } until ($oseeLock)
 
 try {
-    $oseeListener = Get-OseeListener
+    $oseeState = $null
+    if (Test-Path -LiteralPath $oseeStateFile) {
+        # PowerShell 7.5+ otherwise turns ISO strings into DateTime values.
+        # Keep the saved timestamp's exact precision for process identity checks.
+        $oseeJsonOptions = @{}
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $oseeJsonOptions.DateKind = 'String' }
+        $oseeState = Get-Content -LiteralPath $oseeStateFile -Raw | ConvertFrom-Json @oseeJsonOptions
+        if ($oseeState.root -ne $oseeRoot -or $oseeState.port -lt 1024 -or $oseeState.port -gt 65535) {
+            throw 'Catatan proses tidak sesuai dengan workspace ini.'
+        }
+    }
     if ($Stop) {
-        if (-not (Test-Path -LiteralPath $oseeStateFile)) {
-            if ($oseeListener) { throw 'Server belum terdaftar pada peluncur ini. Jalankan Start OSEE untuk memeriksanya dahulu.' }
-            Write-Host 'OSEE sudah berhenti.'
+        if (-not $oseeState) {
+            Write-Host 'Tidak ada server terdaftar. Jalankan Start OSEE untuk memeriksa server yang sudah berjalan.'
             return
         }
-        $oseeState = Get-Content -LiteralPath $oseeStateFile -Raw | ConvertFrom-Json
-        if ($oseeState.root -ne $oseeRoot -or $oseeState.port -ne 8000) { throw 'Catatan proses tidak sesuai dengan workspace ini.' }
-        if ($oseeListener -and $oseeListener.OwningProcess -ne $oseeState.server.pid) { throw 'Port 8000 sedang digunakan proses lain. Proses tersebut tidak dihentikan.' }
+        $oseePort = [int]$oseeState.port
+        $oseeListener = Get-OseeListener
+        if ($oseeListener -and $oseeListener.OwningProcess -ne $oseeState.server.pid) { throw "Port $oseePort sedang digunakan proses lain. Proses tersebut tidak dihentikan." }
         Stop-OseeProcess $oseeState.server
         Stop-OseeProcess $oseeState.launcher
         Remove-Item -LiteralPath $oseeStateFile
         Write-Host 'Server OSEE sudah dihentikan. Data perusahaan tetap tersimpan.' -ForegroundColor Green
         return
     }
-    if ($oseeListener) {
-        $oseeIdentity = Get-OseeIdentity ([int]$oseeListener.OwningProcess)
-        if (-not $oseeIdentity) { throw 'Port 8000 digunakan proses lain. Proses tersebut tidak diubah atau dihentikan.' }
+    # Reuse this workspace's server first. A foreign listener is only an occupied
+    # port; a successful /health/ response alone never proves process ownership.
+    $oseeCandidates = @($Port..($Port + 10))
+    if ($oseeState) { $oseeCandidates += [int]$oseeState.port }
+    $oseeListeners = @(Get-NetTCPConnection -State Listen -LocalPort ($oseeCandidates | Select-Object -Unique) -ErrorAction SilentlyContinue)
+    $oseeRunning = @()
+    foreach ($oseeEntry in ($oseeListeners | Sort-Object OwningProcess -Unique)) {
+        $oseeFound = Get-OseeIdentity ([int]$oseeEntry.OwningProcess)
+        if ($oseeFound -and $oseeFound.port -eq $oseeEntry.LocalPort) { $oseeRunning += $oseeFound }
+    }
+    if ($oseeRunning.Count -gt 1) { throw 'Lebih dari satu server OSEE workspace ini berjalan. Periksa proses sebelum melanjutkan.' }
+    if ($oseeRunning.Count -eq 1) {
+        $oseeIdentity = $oseeRunning[0]
+        $oseePort = $oseeIdentity.port
         if (-not $Status) { Save-OseeIdentity $oseeIdentity }
         if (-not (Test-OseeHealth)) { throw "Proses OSEE ada tetapi belum merespons. Gunakan Stop OSEE sebelum mencoba lagi; log di $oseeLogDir." }
-        Write-Host 'OSEE sudah berjalan di http://127.0.0.1:8000' -ForegroundColor Green
+        Write-Host "OSEE sudah berjalan di http://127.0.0.1:$oseePort" -ForegroundColor Green
         return
     }
     if ($Status) { Write-Host 'Server OSEE belum berjalan.'; exit 1 }
     if (Test-Path -LiteralPath $oseeStateFile) {
-        $oseePendingState = Get-Content -LiteralPath $oseeStateFile -Raw | ConvertFrom-Json
-        foreach ($oseeSaved in @($oseePendingState.server, $oseePendingState.launcher)) {
+        foreach ($oseeSaved in @($oseeState.server, $oseeState.launcher)) {
             if (-not $oseeSaved) { continue }
             $oseePending = Get-OseeIdentity ([int]$oseeSaved.pid)
             if ($oseePending -and $oseePending.started_at -eq $oseeSaved.started_at -and $oseePending.command -eq $oseeSaved.command) {
@@ -118,6 +142,9 @@ try {
             }
         }
     }
+    $oseeAvailable = @($Port..($Port + 10) | Where-Object { $_ -notin $oseeListeners.LocalPort })
+    if (-not $oseeAvailable.Count) { throw "Alamat lokal $Port sampai $($Port + 10) sedang digunakan. Tutup aplikasi yang tidak diperlukan lalu coba lagi." }
+    $oseePort = $oseeAvailable[0]
 
     if (-not (Test-Path -LiteralPath $oseePython)) {
         $oseeBundled = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
@@ -126,7 +153,10 @@ try {
         & $oseeBasePython -m venv .venv
         if ($LASTEXITCODE -ne 0) { throw 'Tidak dapat menyiapkan Python. Gunakan Python 3.12 atau lebih baru.' }
     }
-    $oseeFingerprint = (Get-FileHash -LiteralPath (Join-Path $oseeRoot 'requirements.txt') -Algorithm SHA256).Hash
+    $oseeHash = [System.Security.Cryptography.SHA256]::Create()
+    $oseeRequirements = [System.IO.File]::OpenRead((Join-Path $oseeRoot 'requirements.txt'))
+    try { $oseeFingerprint = [BitConverter]::ToString($oseeHash.ComputeHash($oseeRequirements)).Replace('-', '') }
+    finally { $oseeRequirements.Dispose(); $oseeHash.Dispose() }
     $oseeMarker = Join-Path $oseeLocal 'requirements.sha256'
     if (-not (Test-Path -LiteralPath $oseeMarker) -or (Get-Content -LiteralPath $oseeMarker -Raw).Trim() -ne $oseeFingerprint) {
         Write-Host 'Menyiapkan dependensi OSEE...'
@@ -142,7 +172,7 @@ try {
     New-Item -ItemType Directory -Path $oseeLogDir -Force | Out-Null
     $oseeStartOptions = @{
         FilePath = $oseePython
-        ArgumentList = @('-u', ('"' + $oseeManage + '"'), 'runserver', '127.0.0.1:8000', '--noreload')
+        ArgumentList = @('-u', ('"' + $oseeManage + '"'), 'runserver', "127.0.0.1:$oseePort", '--noreload')
         WorkingDirectory = $oseeRoot
         WindowStyle = 'Hidden'
         PassThru = $true
@@ -173,7 +203,7 @@ try {
             $oseeIdentity = Get-OseeIdentity ([int]$oseeListener.OwningProcess)
             if ($oseeIdentity -and ($oseeIdentity.pid -eq $oseeLaunch.Id -or $oseeIdentity.parent_pid -eq $oseeLaunch.Id)) {
                 Save-OseeIdentity $oseeIdentity
-                Write-Host 'OSEE siap dibuka di http://127.0.0.1:8000' -ForegroundColor Green
+                Write-Host "OSEE siap dibuka di http://127.0.0.1:$oseePort" -ForegroundColor Green
                 Write-Host 'Server berjalan di latar belakang. Jendela ini boleh ditutup.'
                 Write-Host 'Gunakan Stop OSEE.cmd untuk menghentikan server.'
                 return

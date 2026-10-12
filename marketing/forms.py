@@ -1,8 +1,19 @@
 """Indonesian input forms; only services persist their validated values."""
+
 from django import forms
 
 from finance.models import Invoice
-from .models import AdDailyObservation, Campaign, Lead, MarketingAction, TeamMember, SourceCoverage, METRIC_CHOICES
+
+from .identity_review_forms import LegacyIdentityReviewForm
+from .models import (
+    METRIC_CHOICES,
+    AdDailyObservation,
+    Campaign,
+    Lead,
+    MarketingAction,
+    SourceCoverage,
+    TeamMember,
+)
 
 
 class MarketingModelForm(forms.ModelForm):
@@ -18,11 +29,20 @@ class MarketingModelForm(forms.ModelForm):
                 if name == "party":
                     field.queryset = field.queryset.exclude(kind="supplier")
             if isinstance(field, forms.DateTimeField):
-                field.widget = forms.DateTimeInput(format="%Y-%m-%dT%H:%M:%S", attrs={"type": "datetime-local", "step": "1"})
-                field.input_formats = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+                field.widget = forms.DateTimeInput(
+                    format="%Y-%m-%dT%H:%M:%S",
+                    attrs={"type": "datetime-local", "step": "1"},
+                )
+                field.input_formats = [
+                    "%Y-%m-%dT%H:%M",
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S",
+                ]
                 field.help_text = "Waktu Indonesia Barat (WIB)."
             elif isinstance(field, forms.DateField):
-                field.widget = forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"})
+                field.widget = forms.DateInput(
+                    format="%Y-%m-%d", attrs={"type": "date"}
+                )
             if isinstance(field.widget, forms.Textarea):
                 field.widget.attrs["rows"] = 3
             if isinstance(field, forms.DecimalField):
@@ -33,46 +53,160 @@ class TeamMemberForm(MarketingModelForm):
     class Meta:
         model = TeamMember
         fields = ["name", "discipline", "team", "active"]
-        labels = {"name": "Nama anggota tim", "discipline": "Peran kerja", "team": "Tim", "active": "Anggota aktif"}
+        labels = {
+            "name": "Nama anggota tim",
+            "discipline": "Peran kerja",
+            "team": "Tim",
+            "active": "Anggota aktif",
+        }
 
 
 class CampaignForm(MarketingModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["status"].choices = [
+            item for item in self.fields["status"].choices if item[0] != "completed"
+        ]
+        self.fields[
+            "status"
+        ].help_text = "Penutupan kampanye dilakukan pada halaman keputusan dengan tanggal akhir aktual dan alasan."
+
     class Meta:
         model = Campaign
-        fields = ["name", "channel", "product", "owner", "objective", "start_date", "end_date", "status"]
-        labels = {"name": "Nama kampanye", "channel": "Sumber akuisisi", "product": "Produk", "owner": "Penanggung jawab kampanye", "objective": "Tujuan kampanye", "start_date": "Mulai", "end_date": "Selesai", "status": "Status"}
-        help_texts = {"owner": "Pengelola kampanye. Petugas follow-up dipilih pada prospek.", "channel": "Pilih sumber awal prospek; WA sebagai tempat mengobrol tidak mengganti asal iklan."}
+        fields = [
+            "name",
+            "channel",
+            "product",
+            "owner",
+            "objective",
+            "start_date",
+            "end_date",
+            "status",
+        ]
+        labels = {
+            "name": "Nama kampanye",
+            "channel": "Sumber akuisisi",
+            "product": "Produk",
+            "owner": "Penanggung jawab kampanye",
+            "objective": "Tujuan kampanye",
+            "start_date": "Mulai",
+            "end_date": "Selesai",
+            "status": "Status",
+        }
+        help_texts = {
+            "owner": "Pengelola kampanye. Petugas follow-up dipilih pada prospek.",
+            "channel": "Pilih sumber awal prospek; WA sebagai tempat mengobrol tidak mengganti asal iklan.",
+        }
 
 
 class AdObservationForm(MarketingModelForm):
     class Meta:
         model = AdDailyObservation
-        fields = ["campaign", "date", "ad_name", "audience", "region", "spend", "impressions", "clicks", "source", "reference"]
-        labels = {"campaign": "Kampanye", "date": "Tanggal laporan", "ad_name": "Nama / ID iklan", "audience": "Audiens", "region": "Wilayah", "spend": "Biaya iklan dilaporkan (Rp)", "impressions": "Tayangan", "clicks": "Klik", "source": "Sumber laporan", "reference": "Referensi unik laporan"}
-        help_texts = {"spend": "Kosong berarti belum diketahui. Nol berarti sumber menyatakan tidak ada biaya.", "reference": "Satu referensi untuk satu baris sumber. Unggahan ulang harus mempunyai angka yang sama.", "ad_name": "Gunakan satu tingkat rincian per kampanye dan hari; jangan mencampur total dengan rincian yang termasuk di dalamnya."}
+        fields = [
+            "campaign",
+            "date",
+            "ad_name",
+            "audience",
+            "region",
+            "spend",
+            "impressions",
+            "clicks",
+            "source",
+            "reference",
+        ]
+        labels = {
+            "campaign": "Kampanye",
+            "date": "Tanggal laporan",
+            "ad_name": "Nama / ID iklan",
+            "audience": "Audiens",
+            "region": "Wilayah",
+            "spend": "Biaya iklan dilaporkan (Rp)",
+            "impressions": "Tayangan",
+            "clicks": "Klik",
+            "source": "Sumber laporan",
+            "reference": "Referensi unik laporan",
+        }
+        help_texts = {
+            "spend": "Kosong berarti belum diketahui. Nol berarti sumber menyatakan tidak ada biaya.",
+            "reference": "Satu referensi untuk satu baris sumber. Unggahan ulang harus mempunyai angka yang sama.",
+            "ad_name": "Gunakan satu tingkat rincian per kampanye dan hari; jangan mencampur total dengan rincian yang termasuk di dalamnya.",
+        }
 
 
 class SourceCoverageForm(MarketingModelForm):
-    confirm_complete = forms.BooleanField(label="Saya telah memeriksa seluruh sumber/akun kampanye untuk interval ini",
-        help_text="Termasuk hari tanpa aktivitas menurut bukti sumber. Konfirmasi ini milik pengguna, bukan pemeriksaan otomatis platform; jangan membuat baris nol untuk mengisi tanggal kosong.")
+    confirm_complete = forms.BooleanField(
+        label="Saya telah memeriksa seluruh sumber/akun kampanye untuk interval ini",
+        help_text="Termasuk hari tanpa aktivitas menurut bukti sumber. Konfirmasi ini milik pengguna, bukan pemeriksaan otomatis platform; jangan membuat baris nol untuk mengisi tanggal kosong.",
+    )
 
     class Meta:
         model = SourceCoverage
-        fields = ["campaign", "period_start", "period_end", "source", "reference", "declared_spend", "evidence"]
-        labels = {"campaign": "Kampanye", "period_start": "Awal cakupan sumber", "period_end": "Akhir cakupan sumber",
-                  "source": "Daftar sumber / akun yang diperiksa", "reference": "Referensi unik dokumen pemeriksaan",
-                  "declared_spend": "Total belanja menurut sumber (Rp)", "evidence": "Lokasi bukti dan uraian pemeriksaan"}
-        help_texts = {"source": "Sebutkan seluruh akun/sumber kampanye yang dibandingkan, bukan hanya file yang baru diunggah.",
-                      "evidence": "Cantumkan referensi arsip laporan, cakupan tanggal, dan penjelasan selisih atau hari tidak aktif.",
-                      "declared_spend": "Harus sama dengan biaya pada catatan kampanye dalam interval ini. Nilai kosong harus dilengkapi dulu."}
+        fields = [
+            "campaign",
+            "period_start",
+            "period_end",
+            "source",
+            "reference",
+            "declared_spend",
+            "evidence",
+        ]
+        labels = {
+            "campaign": "Kampanye",
+            "period_start": "Awal cakupan sumber",
+            "period_end": "Akhir cakupan sumber",
+            "source": "Daftar sumber / akun yang diperiksa",
+            "reference": "Referensi unik dokumen pemeriksaan",
+            "declared_spend": "Total belanja menurut sumber (Rp)",
+            "evidence": "Lokasi bukti dan uraian pemeriksaan",
+        }
+        help_texts = {
+            "source": "Sebutkan seluruh akun/sumber kampanye yang dibandingkan, bukan hanya file yang baru diunggah.",
+            "evidence": "Cantumkan referensi arsip laporan, cakupan tanggal, dan penjelasan selisih atau hari tidak aktif.",
+            "declared_spend": "Harus sama dengan biaya pada catatan kampanye dalam interval ini. Nilai kosong harus dilengkapi dulu.",
+        }
 
 
 class LeadForm(MarketingModelForm):
     class Meta:
         model = Lead
-        fields = ["reference", "name", "received_at", "campaign", "channel", "owner", "product", "party", "segment", "region", "stage", "first_response_at", "next_follow_up", "notes"]
-        labels = {"reference": "ID prospek", "name": "Nama singkat prospek", "received_at": "Prospek diterima", "campaign": "Kampanye asal", "channel": "Sumber akuisisi", "owner": "Penanggung jawab follow-up", "product": "Produk yang diminati", "party": "Pembeli di Finance (bila sudah diketahui)", "segment": "Jenis pembeli", "region": "Wilayah", "stage": "Tahap saat dicatat", "first_response_at": "Respons pertama", "next_follow_up": "Tindak lanjut berikutnya", "notes": "Catatan kebutuhan"}
-        help_texts = {"reference": "Gunakan ID unik dari formulir atau CRM; jangan masukkan nomor telepon sebagai ID.", "name": "Cukup nama singkat; hindari data pribadi yang tidak diperlukan.", "party": "Identitas pembeli dan produk diperlukan agar Finance dapat menghubungkan invoice dengan aman.", "stage": "Sepakat membeli belum berarti pembayaran sudah diterima."}
+        fields = [
+            "reference",
+            "name",
+            "received_at",
+            "campaign",
+            "channel",
+            "owner",
+            "product",
+            "party",
+            "segment",
+            "region",
+            "stage",
+            "first_response_at",
+            "next_follow_up",
+            "notes",
+        ]
+        labels = {
+            "reference": "ID prospek",
+            "name": "Nama singkat prospek",
+            "received_at": "Prospek diterima",
+            "campaign": "Kampanye asal",
+            "channel": "Sumber akuisisi",
+            "owner": "Penanggung jawab follow-up",
+            "product": "Produk yang diminati",
+            "party": "Pembeli di Finance (bila sudah diketahui)",
+            "segment": "Jenis pembeli",
+            "region": "Wilayah",
+            "stage": "Tahap saat dicatat",
+            "first_response_at": "Respons pertama",
+            "next_follow_up": "Tindak lanjut berikutnya",
+            "notes": "Catatan kebutuhan",
+        }
+        help_texts = {
+            "reference": "Gunakan ID unik dari formulir atau CRM; jangan masukkan nomor telepon sebagai ID.",
+            "name": "Cukup nama singkat; hindari data pribadi yang tidak diperlukan.",
+            "party": "Identitas pembeli dan produk diperlukan agar Finance dapat menghubungkan invoice dengan aman.",
+            "stage": "Sepakat membeli belum berarti pembayaran sudah diterima.",
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -88,54 +222,122 @@ class LeadForm(MarketingModelForm):
             if cleaned.get("product") is None:
                 cleaned["product"] = campaign.product
         elif not cleaned.get("channel"):
-            self.add_error("channel", "Pilih sumber akuisisi bila kampanye belum diketahui.")
+            self.add_error(
+                "channel", "Pilih sumber akuisisi bila kampanye belum diketahui."
+            )
         return cleaned
 
 
 class LeadUpdateForm(MarketingModelForm):
+    responsibility_reason = forms.CharField(
+        label="Alasan bantuan langsung oleh direktur",
+        required=False,
+        max_length=1000,
+        widget=forms.Textarea(attrs={"rows": 2}),
+        help_text="Wajib bila Owner/direktur mengubah ringkasan tanpa menjadi PIC atau pengganti dengan delegasi aktif.",
+    )
+    correction_reason = forms.CharField(
+        label="Alasan koreksi waktu respons (bila diubah)",
+        required=False,
+        max_length=1000,
+        widget=forms.Textarea(attrs={"rows": 2}),
+        help_text="Wajib saat mengubah atau menghapus waktu respons yang sudah tercatat; perubahan tersimpan dalam linimasa dan audit.",
+    )
+
     class Meta:
         model = Lead
         fields = ["stage", "first_response_at", "next_follow_up", "notes"]
         labels = {key: LeadForm.Meta.labels[key] for key in fields}
-        help_texts = {"stage": "Perubahan tahap tercatat dalam riwayat. Pembayaran tetap berasal dari Finance."}
+        help_texts = {
+            "stage": "Perubahan tahap tercatat dalam riwayat. Pembayaran tetap berasal dari Finance."
+        }
+
+    def clean_first_response_at(self):
+        value = self.cleaned_data["first_response_at"]
+        original = self.initial.get("first_response_at")
+        # The unchanged datetime-local value renders seconds, not stored microseconds.
+        if original is not None and value == original.replace(microsecond=0):
+            return original
+        return value
 
 
-class InvoiceLinkForm(forms.Form):
-    invoice = forms.ModelChoiceField(queryset=Invoice.objects.none(), label="Invoice yang sudah diterbitkan")
-    confirm_identity = forms.BooleanField(required=False, label="Saya telah memeriksa bahwa invoice benar milik prospek ini", help_text="Bila pembeli atau produk belum diketahui, identitasnya dilengkapi dari invoice yang Anda periksa. Perubahan pemetaan disimpan dalam audit.")
+class InvoiceLinkForm(LegacyIdentityReviewForm):
+    invoice = forms.ModelChoiceField(
+        queryset=Invoice.objects.none(), label="Invoice yang sudah diterbitkan"
+    )
+    confirm_identity = forms.BooleanField(
+        required=False,
+        label="Saya telah memeriksa bahwa invoice benar milik prospek ini",
+        help_text="Bila pembeli atau produk belum diketahui, identitasnya dilengkapi dari invoice yang Anda periksa. Perubahan pemetaan disimpan dalam audit.",
+    )
 
     def __init__(self, *args, organization, lead=None, **kwargs):
         super().__init__(*args, **kwargs)
-        rows = Invoice.objects.filter(organization=organization, status__in=("issued", "delivered"), marketing_leads__isnull=True)
+        rows = Invoice.objects.filter(
+            organization=organization,
+            status__in=("issued", "delivered"),
+            marketing_leads__isnull=True,
+        )
         if lead is not None:
             if lead.product_id:
                 rows = rows.filter(product_id=lead.product_id)
             if lead.party_id:
                 rows = rows.filter(party_id=lead.party_id)
-            rows = rows.filter(party__kind="reseller" if lead.segment == "reseller" else "customer")
+            rows = rows.filter(
+                party__kind="reseller" if lead.segment == "reseller" else "customer"
+            )
         self.fields["invoice"].queryset = rows
-        self.fields["invoice"].label_from_instance = lambda obj: f"{obj.number} · {obj.party.name} · {obj.product.name}"
+        self.fields["invoice"].label_from_instance = lambda obj: (
+            f"{obj.number} · {obj.party.name} · {obj.product.name}"
+        )
 
 
 class MarketingActionForm(MarketingModelForm):
-    metric_key = forms.ChoiceField(label="Ukuran hasil", choices=METRIC_CHOICES,
-                                  help_text="Pilih ukuran yang akan diperiksa setelah tindakan selesai.")
+    metric_key = forms.ChoiceField(
+        label="Ukuran hasil",
+        choices=METRIC_CHOICES,
+        help_text="Pilih ukuran yang akan diperiksa setelah tindakan selesai.",
+    )
+
     class Meta:
         model = MarketingAction
         fields = ["title", "evidence", "description", "owner", "due_date", "metric_key"]
-        labels = {"title": "Tindakan yang akan dikerjakan", "evidence": "Dasar / temuan dan periode", "description": "Langkah pelaksanaan", "owner": "Penanggung jawab", "due_date": "Tenggat", "metric_key": "Ukuran hasil"}
-        help_texts = {"metric_key": "Contoh: cash_in, respons pertama, atau prospek yang sesuai kebutuhan. Hasil perlu dievaluasi setelah tindakan selesai."}
+        labels = {
+            "title": "Tindakan yang akan dikerjakan",
+            "evidence": "Dasar / temuan dan periode",
+            "description": "Langkah pelaksanaan",
+            "owner": "Penanggung jawab",
+            "due_date": "Tenggat",
+            "metric_key": "Ukuran hasil",
+        }
+        help_texts = {
+            "metric_key": "Contoh: cash_in, respons pertama, atau prospek yang sesuai kebutuhan. Hasil perlu dievaluasi setelah tindakan selesai."
+        }
 
 
 class ActionUpdateForm(MarketingModelForm):
     class Meta:
         model = MarketingAction
         fields = ["status", "outcome"]
-        labels = {"status": "Status tindakan", "outcome": "Hasil evaluasi / alasan tidak dilanjutkan"}
-        help_texts = {"outcome": "Catat hasil yang teramati dan periode. Perbaikan sesudah tindakan belum membuktikan sebab akibat."}
+        labels = {
+            "status": "Status tindakan",
+            "outcome": "Hasil evaluasi / alasan tidak dilanjutkan",
+        }
+        help_texts = {
+            "outcome": "Catat hasil yang teramati dan periode. Perbaikan sesudah tindakan belum membuktikan sebab akibat."
+        }
 
 
 class MarketingAIPolicyForm(forms.Form):
-    enabled = forms.BooleanField(required=False, label="Izinkan AI memprioritaskan temuan agregat marketing")
-    monthly_budget_usd = forms.DecimalField(min_value=0, max_digits=12, decimal_places=6, label="Batas bulanan (USD)")
-    request_cap_usd = forms.DecimalField(min_value=0, max_digits=12, decimal_places=6, label="Batas tiap permintaan (USD)")
+    enabled = forms.BooleanField(
+        required=False, label="Izinkan AI memprioritaskan temuan agregat marketing"
+    )
+    monthly_budget_usd = forms.DecimalField(
+        min_value=0, max_digits=12, decimal_places=6, label="Batas bulanan (USD)"
+    )
+    request_cap_usd = forms.DecimalField(
+        min_value=0,
+        max_digits=12,
+        decimal_places=6,
+        label="Batas tiap permintaan (USD)",
+    )

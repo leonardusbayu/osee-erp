@@ -1,0 +1,14 @@
+{% extends 'marketing/base.html' %}
+{% block title %}Pindahkan pekerjaan{% endblock %}
+{% block marketing_content %}
+<a class="back-link" href="{% url 'marketing:activity_detail' work.pk %}">← {{ work.title }}</a>
+<div class="page-heading"><div><h1>Pindahkan pekerjaan</h1><p>Pilih staf pengganti dan jelaskan alasannya. Bukti serta riwayat pekerjaan tetap tersimpan.</p></div></div>
+<section class="panel m-panel">
+<p><strong>Pekerjaan:</strong> {{ work.title }}</p>
+<p><strong>Penanggung jawab saat ini:</strong> {{ work.assigned_owner }}</p>
+{% if eligible %}
+{% if has_recipients %}<form method="post" novalidate>{% csrf_token %}{% include 'marketing/fields.html' with form=form %}<div class="form-actions"><button class="button button-primary" type="submit">Pindahkan pekerjaan</button><a class="button button-secondary" href="{% url 'marketing:activity_detail' work.pk %}">Kembali</a></div></form>
+{% else %}<div class="m-callout"><strong>Belum ada staf pengganti</strong><p>Owner perlu menghubungkan staf aktif dengan akun perusahaan di pengaturan tim.</p><a class="text-link" href="{% url 'marketing:members' %}">Buka tim marketing →</a></div>{% endif %}
+{% else %}<div class="m-callout"><strong>Pekerjaan ini belum dapat dipindahkan</strong><p>Hasil yang diajukan harus diperiksa atau ditarik dahulu. Pekerjaan yang sudah diterima atau dibatalkan disimpan sebagai riwayat.</p></div>{% endif %}
+</section>
+{% endblock %}

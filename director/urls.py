@@ -1,5 +1,7 @@
 from django.urls import path
+
 from . import views
+from .spend_urls import urlpatterns as spend_patterns
 
 app_name = "director"
 urlpatterns = [
@@ -13,21 +15,41 @@ urlpatterns = [
     path("decisions/new/", views.decision_edit, name="decision_create"),
     path("decisions/<int:pk>/", views.decision_detail, name="decision_detail"),
     path("decisions/<int:pk>/edit/", views.decision_edit, name="decision_edit"),
-    path("decisions/<int:pk>/actions/<str:action>/", views.decision_action, name="decision_action"),
+    path(
+        "decisions/<int:pk>/actions/<str:action>/",
+        views.decision_action,
+        name="decision_action",
+    ),
     path("budgets/", views.budgets, name="budgets"),
     path("budgets/new/", views.budget_edit, name="budget_create"),
     path("budgets/<int:pk>/", views.budget_detail, name="budget_detail"),
     path("budgets/<int:pk>/edit/", views.budget_edit, name="budget_edit"),
-    path("budgets/<int:pk>/actions/<str:action>/", views.budget_action, name="budget_action"),
+    path(
+        "budgets/<int:pk>/actions/<str:action>/",
+        views.budget_action,
+        name="budget_action",
+    ),
     path("budgets/<int:pk>/entries/new/", views.budget_entry, name="budget_entry"),
-    path("budgets/<int:pk>/entries/<int:entry_pk>/replace/", views.budget_entry, name="budget_entry_replace"),
-    path("budgets/<int:pk>/entries/<int:entry_pk>/payment/", views.budget_payment, name="budget_payment"),
+    path(
+        "budgets/<int:pk>/entries/<int:entry_pk>/replace/",
+        views.budget_entry,
+        name="budget_entry_replace",
+    ),
+    path(
+        "budgets/<int:pk>/entries/<int:entry_pk>/payment/",
+        views.budget_payment,
+        name="budget_payment",
+    ),
     path("cash/", views.cash, name="cash"),
     path("cash/new/", views.cash_edit, name="cash_create"),
     path("cash/<int:pk>/", views.cash_detail, name="cash_detail"),
     path("cash/<int:pk>/edit/", views.cash_edit, name="cash_edit"),
     path("cash/<int:pk>/lines/new/", views.cash_line, name="cash_line"),
-    path("cash/<int:pk>/lines/<int:line_pk>/replace/", views.cash_line, name="cash_line_replace"),
+    path(
+        "cash/<int:pk>/lines/<int:line_pk>/replace/",
+        views.cash_line,
+        name="cash_line_replace",
+    ),
     path("marketing/", views.marketing, name="marketing"),
     path("marketing/new/", views.marketing_edit, name="marketing_create"),
     path("marketing/import/", views.marketing_import, name="marketing_import"),
@@ -44,3 +66,4 @@ urlpatterns = [
     path("reports/document/", views.report_pdf, name="report_pdf"),
     path("api/snapshot/", views.snapshot_api, name="snapshot_api"),
 ]
+urlpatterns += spend_patterns

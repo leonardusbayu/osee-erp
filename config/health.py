@@ -1,4 +1,5 @@
 """Readiness is separate from process liveness and never returns infrastructure detail."""
+
 import secrets
 from pathlib import Path
 from tempfile import NamedTemporaryFile

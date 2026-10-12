@@ -1,0 +1,114 @@
+/* Shared staff interface: familiar hierarchy, readable text, native disclosure. */
+.workspace { font-size: 15px; line-height: 1.55; }
+.workspace h1 { font-size: clamp(26px, 3vw, 34px); line-height: 1.2; }
+.workspace h2 { font-size: 19px; line-height: 1.35; }
+.workspace h3 { font-size: 16px; }
+.workspace p, .page-heading p, .panel-heading p, .m-panel p, .m-callout p,
+.form-note p, .field-help, .field-error, .form-note .small { font-size: 14px; line-height: 1.6; }
+.workspace small, .cell-sub, .m-data-table td small, .metric-foot { font-size: 12px; line-height: 1.5; }
+.main-nav a, .settings-link { min-height: 44px; font-size: 14px; }
+.main-nav a { padding: 10px 12px; }
+.main-nav .nav-more { margin-top: 8px; border-top: 1px solid var(--line); }
+.nav-more > summary { padding: 12px; min-height: 44px; color: var(--muted); font-size: 14px; cursor: pointer; }
+.main-nav .nav-more > a { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 44px; padding: 10px 12px; border-radius: 8px; color: var(--muted); font-size: 14px; line-height: 1.35; text-decoration: none; overflow-wrap: anywhere; }
+.main-nav .nav-more > a .icon { width: 18px; height: 18px; flex: 0 0 18px; }
+.main-nav .nav-more > a:hover { background: var(--bg); color: var(--primary); }
+.main-nav .nav-more > a.active { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+.main-nav .nav-more > a.active::after { content: ""; width: 5px; height: 5px; flex: 0 0 5px; margin-left: auto; border-radius: 50%; background: var(--primary); }
+.workspace .button { min-height: 44px; font-size: 14px; padding: 11px 16px; white-space: normal; text-align: center; }
+.workspace .button-small { min-height: 40px; font-size: 13px; }
+.workspace .text-link { font-size: 14px; display: inline-block; padding: 7px 0; }
+.workspace input:not([type=checkbox]):not([type=radio]):not([type=hidden]),
+.workspace select, .workspace textarea { font-size: 16px; min-height: 44px; }
+.workspace input[type=checkbox], .workspace input[type=radio] { width: 18px; height: 18px; }
+.workspace .field-row label, .workspace .m-field label, .workspace .m-list-filters label { font-size: 14px; }
+.workspace .data-table { font-size: 14px; }
+.workspace .data-table th { font-size: 12px; letter-spacing: .3px; }
+.workspace .pill, .workspace .metric-label { font-size: 12px; }
+.workspace .message, .workspace .info-strip, .workspace .m-caption,
+.workspace .m-workflow, .workspace .m-workflow span { font-size: 14px; line-height: 1.6; }
+.workspace .metric-label { line-height: 1.45; }
+.workspace .heading-actions, .workspace .form-actions { flex-wrap: wrap; gap: 10px; }
+.workspace details > summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-size: 14px; font-weight: 600; }
+.workspace .ui-details, .workspace .ux-details { margin: 18px 0; border-top: 1px solid var(--line); }
+.workspace .task-steps { list-style: none; display: flex; flex-wrap: wrap; gap: 12px 30px; padding: 14px 20px; margin: 18px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--primary-soft); font-size: 14px; }
+.workspace .task-steps li { padding-left: 3px; }
+.required-marker { font-size: 12px; font-weight: 400; color: var(--muted); }
+.module-card .button { margin-top: 16px; }
+.module-card p { max-width: 48ch; }
+.workspace .module-card h2 { margin-top: 12px; }
+.workspace .module-primary { margin-bottom: 20px; }
+.workspace .module-card-primary { max-width: 900px; min-height: 0; padding: 30px; border: 2px solid var(--primary); background: var(--primary-soft); }
+.workspace .module-card-primary .module-card-top { margin-bottom: 12px; }
+.workspace .module-card-primary h2 { font-size: 24px; }
+.workspace .module-card-primary p { max-width: 58ch; }
+.workspace .module-card-primary .button { align-self: flex-start; }
+.workspace .module-others { margin-top: 10px; border-top: 1px solid var(--line); }
+.workspace .module-others > summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; color: var(--primary); }
+.module-other-count { color: var(--muted); font-size: 12px; font-weight: 400; }
+.workspace .form-note { padding: 18px; }
+.workspace .allocation-form, .workspace .bank-match-empty { white-space: normal; }
+.workspace .bank-match-empty { max-width: 32ch; }
+.workspace .allocation-form .field-error { white-space: normal; }
+.workspace .form-note h2 { margin-bottom: 8px; }
+.workspace .module-plans { margin-top: 24px; }
+.workspace .module-plans > summary { color: var(--muted); }
+.setup-progress { margin: 24px 0 8px; }
+.workspace .onboarding-guide details > summary.panel-heading { padding: 16px 20px; }
+.onboarding-guide details > summary.panel-heading > span:first-child { flex: 1 1 160px; }
+.onboarding-guide details > summary.panel-heading::after { content: "Buka"; font-size: 12px; color: var(--primary); }
+.onboarding-guide details[open] > summary.panel-heading::after { content: "Tutup"; }
+.auth-page .field-row label { font-size: 14px; }
+.auth-page input { font-size: 16px; min-height: 44px; }
+.auth-page .button { font-size: 15px; min-height: 48px; }
+.auth-page .auth-card p { font-size: 14px; line-height: 1.6; }
+.main-nav a:focus-visible, .nav-more > summary:focus-visible,
+.workspace .button:focus-visible, .workspace summary:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+@media (max-width: 600px) {
+  .workspace .page-heading { align-items: stretch; gap: 14px; }
+  .workspace .page-heading h1 { font-size: 27px; }
+  .workspace .page-heading .heading-actions { max-width: none; justify-content: flex-start; }
+  .workspace .task-steps { display: block; padding-left: 34px; }
+  .workspace .task-steps li + li { margin-top: 8px; }
+  .workspace .panel-heading { flex-wrap: wrap; align-items: flex-start; }
+  .workspace .global-search { display: none; }
+  .workspace .module-card-primary { padding: 22px 18px; }
+  .workspace .module-card-primary h2 { font-size: 21px; }
+  .workspace .module-card-primary .button { width: 100%; }
+  .workspace .m-list-filters { align-items: stretch; }
+  .workspace .daily-tasks { min-width: 0; width: 100%; }
+  .workspace .daily-tasks thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .workspace .daily-tasks tbody, .workspace .daily-tasks tr { display: block; width: 100%; }
+  .workspace .daily-tasks tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .workspace .daily-tasks td { display: block; padding: 6px 16px; border: 0; white-space: normal; }
+  .workspace .daily-tasks td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 12px; }
+  .workspace .daily-tasks td .text-link { font-weight: 600; }
+  .workspace .bank-table { min-width: 0; width: 100%; }
+  .workspace .bank-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .workspace .bank-table tbody, .workspace .bank-table tr { display: block; width: 100%; }
+  .workspace .bank-table tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .workspace .bank-table td { display: block; padding: 6px 16px; border: 0; white-space: normal; text-align: left; }
+  .workspace .bank-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 12px; }
+  .workspace .bank-table .allocation-details, .workspace .bank-table .allocation-form { min-width: 0; width: 100%; }
+  .workspace .bank-table .transaction-desc, .workspace .bank-table .cell-sub { max-width: none; overflow-wrap: anywhere; }
+  .workspace .bank-table select, .workspace .bank-table input { max-width: 100%; }
+}
+
+/* Bank matching controls belong to the full transaction width. */
+.workspace .bank-table { table-layout: fixed; width: 100%; }
+.workspace .bank-table th,
+.workspace .bank-table td { white-space: normal; overflow-wrap: anywhere; }
+.workspace .bank-table .bank-transaction-row > td { border-bottom: 0; padding-bottom: 8px; }
+.workspace .bank-table .bank-action-row > td { padding-top: 0; }
+.workspace .bank-table .allocation-details { min-width: 0; width: 100%; }
+.workspace .bank-table .allocation-form { min-width: 0; width: 100%; max-width: 48rem; }
+.workspace .bank-table .allocation-form > * { min-width: 0; }
+.workspace .bank-table .allocation-form input,
+.workspace .bank-table .allocation-form select { min-width: 0; max-width: 100%; }
+.workspace .bank-table .allocation-form label { font-size: 14px; }
+.workspace .bank-table .allocation-form .field-help,
+.workspace .bank-table .allocation-form .field-error { font-size: 14px; line-height: 1.6; }
+@media (max-width: 600px) {
+  .workspace .bank-table .bank-transaction-row { padding-bottom: 0; border-bottom: 0; }
+  .workspace .bank-table .bank-action-row { padding-top: 0; }
+}

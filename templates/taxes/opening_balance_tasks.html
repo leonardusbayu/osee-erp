@@ -1,0 +1,11 @@
+{% load finance_format %}
+{% if opening_balance_tax_candidates %}
+<section class="panel settings-section">
+  <div class="panel-heading"><div><h2>Kas piutang dan utang lama yang perlu diperiksa</h2><p>Cocokkan dokumen pajak untuk setiap penerimaan atau pembayaran, termasuk jika saldo pokok sudah lunas.</p></div></div>
+  <div class="panel-body">
+    {% for item in opening_balance_tax_candidates %}
+    <article class="settings-section"><h3>Kas #{{ item.settlement_id }} · {{ item.date|iddate }}</h3><p>{{ item.reason }}</p><a class="button button-secondary button-small" href="{% url 'opening_balance_tax:review' item.settlement_id %}">Periksa dokumen pajak</a></article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}

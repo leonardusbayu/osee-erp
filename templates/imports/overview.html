@@ -6,11 +6,11 @@
 <div class="imports-workspace">
   <div class="page-heading">
     <div>
-      <div class="eyebrow">REKAP SUMBER · RUANG PEMERIKSAAN</div>
+      <div class="eyebrow">REKAP DARI DOKUMEN</div>
       <h1>Data {{ period_year }}<span class="heading-dot">.</span></h1>
-      <p>Rekap yang dilaporkan, lengkap dengan rincian dan dokumen asalnya.</p>
+      <p>Pilih bulan untuk memeriksa rincian. Gunakan Pemeriksaan sumber untuk menyelesaikan angka yang perlu ditelusuri.</p>
     </div>
-    <a class="button button-secondary" href="{% url 'imports_export' %}">Unduh ringkasan CSV</a><span class="pill pill-amber import-state">{% include 'app/icons.html' with name='book' %}Belum dibukukan</span>
+    <a class="button button-secondary" href="{% url 'import_exception_inbox' %}">Pemeriksaan sumber</a><a class="button button-secondary" href="{% url 'imports_export' %}">Unduh ringkasan CSV</a><span class="pill pill-amber import-state">{% include 'app/icons.html' with name='book' %}Belum dibukukan</span>
   </div>
 
   <div class="import-boundary" role="note">
@@ -38,12 +38,12 @@
     <article class="panel import-metric">
       <span>Catatan pemeriksaan</span>
       <strong>{% if summary.exception_count is not None %}{{ summary.exception_count|intcomma }}{% else %}—{% endif %}</strong>
-      <small>Perbedaan dan konteks yang perlu ditelusuri</small>
+      <small>{{ summary.unresolved_count }} perlu ditinjau · {{ summary.resolved_count }} diselesaikan dengan bukti</small>
     </article>
   </section>
 
   <section class="panel import-coverage" aria-labelledby="coverage-heading">
-    <div class="import-coverage-heading"><h2 id="coverage-heading">Cakupan dokumen</h2><span class="pill import-neutral-pill">{{ coverage_label }}</span></div>
+    <div class="import-coverage-heading"><h2 id="coverage-heading">Bulan yang memiliki dokumen</h2><span class="pill import-neutral-pill">{{ coverage_label }}</span></div>
     <p>{% if partial_months %}{{ partial_months|join:', ' }} masih parsial. {% endif %}Bulan tanpa sumber tidak dianggap bernilai nol.</p>
     <div class="import-coverage-facts">
       {% if summary.covered_months %}<span><strong>{{ summary.covered_months|length }}</strong> bulan memiliki sumber</span>{% endif %}

@@ -1,10 +1,79 @@
 from django.contrib.auth.models import User
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import Membership, Organization
 from imports import tests as source_test_helpers
 from imports.models import SourceDocument
+from webapp.import_views import _exception_text
+
+
+class ImportExceptionTextTests(SimpleTestCase):
+    def test_known_import_exceptions_keep_their_finance_facing_explanations(self):
+        cases = (
+            (
+                {
+                    "code": "detail_count_mismatch",
+                    "observed": {"detail_count": 3, "printed_count": 2},
+                    "message": "Periksa rincian.",
+                },
+                "Rincian 3, total tercetak 2. Periksa rincian.",
+            ),
+            (
+                {
+                    "code": "header_price_extension_mismatch",
+                    "observed": {"printed_amount": 2_000_000},
+                    "expected": {"header_price_extension": 1_500_000},
+                    "message": "Selisih harga.",
+                },
+                "Subtotal tercetak Rp2.000.000; jumlah × harga kolom Rp1.500.000. Selisih harga.",
+            ),
+            (
+                {
+                    "code": "missing_printed_amount",
+                    "observed": {"printed_count": 5},
+                    "message": "Nominal belum ada.",
+                },
+                "5 peserta; nominal belum tercantum. Nominal belum ada.",
+            ),
+            (
+                {
+                    "code": "date_year_conflict",
+                    "observed": {"raw_date": "05-Jan-25", "quantity": 2},
+                    "message": "Tahun berbeda.",
+                },
+                "Tanggal tertulis 05-Jan-25, mencakup 2 peserta. Tahun berbeda.",
+            ),
+            (
+                {
+                    "code": "merged_date_cell_ambiguity",
+                    "observed": {
+                        "quantity": 3,
+                        "source_date_candidates": ["05-Jan-25", "06-Jan-25"],
+                    },
+                    "message": "Periksa tanggal.",
+                },
+                "3 peserta pada sel tanggal 05-Jan-25 / 06-Jan-25. Periksa tanggal.",
+            ),
+            (
+                {
+                    "code": "annual_summary_incomplete_coverage",
+                    "observed": {
+                        "annual_printed_total": 12,
+                        "monthly_printed_total": 11,
+                    },
+                    "message": "Periksa rekap.",
+                },
+                "Ringkasan tahunan 12 peserta; jumlah seluruh rekap bulanan 11. Periksa rekap.",
+            ),
+            (
+                {"code": "unknown_exception", "message": "Perlu pemeriksaan."},
+                "Perlu pemeriksaan.",
+            ),
+        )
+        for payload, expected in cases:
+            with self.subTest(code=payload["code"]):
+                self.assertEqual(_exception_text(payload), expected)
 
 
 class ImportWebTests(TestCase):
@@ -17,7 +86,14 @@ class ImportWebTests(TestCase):
 
     def test_real_source_totals_render_and_unknown_month_is_not_zero_data(self):
         self.run_import()
-        for name in ["dashboard", "imports_overview", "partners", "reports", "bank", "sales"]:
+        for name in [
+            "dashboard",
+            "imports_overview",
+            "partners",
+            "reports",
+            "bank",
+            "sales",
+        ]:
             response = self.client.get(reverse(name))
             self.assertEqual(response.status_code, 200, name)
             self.assertContains(response, "Data 2026")
@@ -28,8 +104,12 @@ class ImportWebTests(TestCase):
         response = self.client.get(reverse("imports_month", args=["2026-01"]))
         self.assertContains(response, "05-Jan-25")
         self.assertContains(response, "Tahun berbeda")
-        self.assertEqual(self.client.get(reverse("imports_month", args=["2026-02"])).status_code, 404)
-        self.assertIsNone(self.client.get(reverse("imports_overview") + "?year=2027").context["batch"])
+        self.assertEqual(
+            self.client.get(reverse("imports_month", args=["2026-02"])).status_code, 404
+        )
+        self.assertIsNone(
+            self.client.get(reverse("imports_overview") + "?year=2027").context["batch"]
+        )
 
     def test_imported_sources_are_private_and_organization_scoped(self):
         self.run_import()
@@ -40,10 +120,14 @@ class ImportWebTests(TestCase):
         self.assertEqual(response["Cache-Control"], "private, no-store")
         self.assertEqual(Client().get(url).status_code, 302)
         outsider = User.objects.create_user("other-reader")
-        Membership.objects.create(organization=self.other, user=outsider, role="auditor")
+        Membership.objects.create(
+            organization=self.other, user=outsider, role="auditor"
+        )
         self.client.force_login(outsider)
         self.assertEqual(self.client.get(url).status_code, 404)
-        self.assertEqual(self.client.get(reverse("imports_month", args=["2026-01"])).status_code, 404)
+        self.assertEqual(
+            self.client.get(reverse("imports_month", args=["2026-01"])).status_code, 404
+        )
         self.assertNotContains(self.client.get(reverse("partners")), "RAW LABEL")
 
     @override_settings(DEBUG=True, LOCAL_SETUP_ENABLED=True, DEMO_MODE=True)
@@ -54,9 +138,17 @@ class ImportWebTests(TestCase):
         self.assertContains(self.client.get(reverse("login")), "Aktifkan akun pemilik")
         self.assertEqual(self.client.post(reverse("demo_login")).status_code, 404)
         before = Organization.objects.count()
-        response = self.client.post(reverse("setup"), {"company_name": "Forged target", "organization": self.other.pk,
-                    "username": "new-company-owner", "email": "owner@example.test",
-                    "password1": "Local-test-password-8427", "password2": "Local-test-password-8427"})
+        response = self.client.post(
+            reverse("setup"),
+            {
+                "company_name": "Forged target",
+                "organization": self.other.pk,
+                "username": "new-company-owner",
+                "email": "owner@example.test",
+                "password1": "Local-test-password-8427",
+                "password2": "Local-test-password-8427",
+            },
+        )
         self.assertRedirects(response, reverse("dashboard"))
         self.assertEqual(Organization.objects.count(), before)
         member = Membership.objects.get(user__username="new-company-owner")
@@ -72,6 +164,8 @@ class ImportWebTests(TestCase):
         self.assertContains(response, "&lt;script&gt;bad()&lt;/script&gt;")
         self.assertNotContains(response, "<script>bad()</script>")
         self.assertEqual(self.client.post(reverse("imports_overview")).status_code, 405)
-        self.assertEqual(self.client.get(reverse("imports_overview") + "?year=bad").status_code, 400)
+        self.assertEqual(
+            self.client.get(reverse("imports_overview") + "?year=bad").status_code, 400
+        )
         exported = self.client.get(reverse("imports_export"))
         self.assertContains(exported, "belum menjadi jurnal")

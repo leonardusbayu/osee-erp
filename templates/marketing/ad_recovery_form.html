@@ -1,0 +1,19 @@
+{% extends 'marketing/base.html' %}{% load finance_format %}
+{% block title %}{{ page_title }}{% endblock %}
+{% block marketing_content %}
+<a class="back-link" href="{{ back_url }}">← Laporan iklan</a>
+<div class="page-heading"><div><div class="eyebrow">MARKETING / PEMERIKSAAN SUMBER</div><h1>{{ page_title }}<span class="heading-dot">.</span></h1><p>{% if recovery_action == 'replace' %}Bandingkan data lama dengan data yang benar dari dokumen yang sudah diperiksa.{% else %}Tarik sumber yang keliru dari perhitungan dengan alasan dan bukti.{% endif %}</p></div></div>
+{% if observation.withdrawn_at %}<div class="message message-error" role="alert">Laporan ini sudah {{ source_status|lower }}. {% if successor %}<a href="{% url 'marketing:ad_detail' successor.pk %}">Lihat laporan pengganti.</a>{% else %}<a href="{{ back_url }}">Buka hasil penarikan dan riwayat.</a>{% endif %} Perubahan tambahan belum disimpan.</div>{% endif %}
+{% if rechecked %}<div class="message" role="status">Data sumber terbaru sudah ditampilkan. Masukan Anda tetap tersimpan di formulir. Periksa kembali perbandingan dan centang persetujuan sebelum menyimpan.</div>{% endif %}
+<div class="m-form-layout">
+<section class="panel form-panel">
+{% if observation.withdrawn_at and not form.is_bound %}<h2>Hasil sudah tercatat</h2><p class="m-caption">Gunakan halaman laporan untuk melihat hasil dan riwayat. Formulir baru tidak diperlukan.</p><div class="form-actions"><a class="button button-primary" href="{{ back_url }}">Lihat hasil</a></div>
+{% else %}<form method="post" novalidate>{% csrf_token %}
+{% if stale %}<div class="message message-error" role="alert">Sumber berubah setelah formulir ini dibuka. Masukan Anda belum disimpan. Pilih “Periksa versi terbaru”, lalu periksa kembali sumber sebelum menyimpan.</div>{% endif %}
+<h2>{% if recovery_action == 'replace' %}Data pengganti yang benar{% else %}Alasan penarikan{% endif %}</h2>
+<p class="m-caption">{% if recovery_action == 'replace' %}Satu laporan lama diganti dengan satu baris sumber nyata. Bila dokumen berisi rincian lain, tambahkan melalui impor CSV lalu periksa kembali cakupannya. {% endif %}Kolom bertanda * wajib diisi.</p>
+{% include 'marketing/fields.html' %}
+<div class="form-actions"><a class="button button-secondary" href="{{ back_url }}">Batal</a>{% if not observation.withdrawn_at %}{% if stale %}<button class="button button-primary" type="submit" name="action" value="recheck">Periksa versi terbaru</button>{% else %}<button class="button button-primary" type="submit" name="action" value="save">{{ submit_label }}</button>{% endif %}{% endif %}</div>
+</form>{% endif %}</section>
+<aside class="m-note"><h2>{% if rechecked %}Sumber terbaru{% else %}Laporan lama{% endif %}</h2>{% include 'marketing/ad_recovery_source.html' %}<div class="m-callout"><strong>Riwayat tetap tersedia</strong><p>{% if recovery_action == 'replace' %}Referensi dokumen dan pencatat sumber awal tetap dapat ditelusuri. Pengganti menjadi sumber aktif hanya jika seluruh pemeriksaan berhasil.{% else %}Penarikan menghentikan pemakaian angka ini. Biaya sebenarnya belum dinyatakan nol; laporan yang benar dan cakupan sumber masih perlu diperiksa.{% endif %}</p></div></aside>
+</div>{% endblock %}

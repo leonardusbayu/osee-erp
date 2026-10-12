@@ -12,7 +12,7 @@ Alur kerja harian: lihat Ringkasan → pilih masalah prioritas → periksa Anali
 
 - Finance tetap memiliki invoice, rekonsiliasi penerimaan, jurnal, dan mutasi bank. Marketing hanya membaca hasil rekonsiliasi dan menyimpan hubungan prospek dengan invoice.
 - Cash-in bruto terverifikasi dihitung dari `finance.Allocation.amount` pada `Allocation.transaction.date`. Transfer belum teralokasi, modal, pinjaman, laporan konversi platform, nilai invoice, dan rekap PDF tidak ditambahkan ke angka ini.
-- Finance saat ini belum memiliki alur refund, pembalikan alokasi, atau uang muka sebelum invoice. Cash-in neto dan laba tidak boleh disimpulkan dari cash-in bruto.
+- Cash-in bruto, refund invoice yang benar-benar dibayar melalui bank, dan kas setelah refund dilaporkan terpisah. Kewajiban refund yang belum dibayar, refund uang muka, chargeback, dan refund piutang lama tidak mengurangi angka marketing. Kas setelah refund bukan laba.
 - Satu invoice hanya mempunyai satu prospek sumber pada versi awal. Ini merupakan atribusi sumber tunggal yang dinyatakan eksplisit, bukan klaim pembuktian kontribusi kausal maupun atribusi multi-touch.
 - Satu invoice boleh menerima beberapa cicilan dan satu mutasi boleh membayar beberapa invoice. Setiap alokasi dihitung sekali; join ke beberapa baris iklan tidak boleh memperbanyak kas.
 - Kolom kosong berarti belum diketahui. Nilai nol hanya berlaku ketika sumber atau kumpulan kejadian yang tercatat memang menghasilkan nol. Ketiadaan catatan tidak membuktikan kelengkapan buku atau kegiatan seluruh perusahaan.
@@ -71,6 +71,7 @@ Filter memakai pilihan yang dibatasi sistem, bukan SQL atau rumus bebas. Angka t
 | `LeadStageEvent` | Satu perubahan tahap prospek | Riwayat tahap tidak dihapus oleh perubahan status terakhir. |
 | Relasi `Lead.invoice` | Invoice ERP yang terbukti terkait prospek | Maksimal satu prospek sumber per invoice. Pengaitan diperiksa terhadap organisasi, pelanggan/mitra, produk, dan status invoice. |
 | `finance.Allocation` | Satu bagian penerimaan bank yang melunasi invoice | Dibaca saja. Tanggal mutasi menentukan periode cash-in, bukan tanggal pencatatan lead atau impor. |
+| `finance.CustomerRefund` / `finance.CreditRefund` | Refund pembatalan atau kredit invoice yang sudah dicocokkan dengan mutasi keluar bank | Dibaca saja. Tanggal mutasi menentukan periode refund. Kewajiban refund, refund uang muka, dan pengembalian piutang lama tidak masuk net marketing. |
 | `MarketingAction` | Satu tindakan dengan bukti dan pemilik | Tenggat, status, versi, dan hasil; bukan persetujuan perubahan anggaran atau perintah ke platform iklan. |
 | `MarketingAIPolicy` | Persetujuan terpisah organisasi untuk agregat marketing | Opt-in pemilik dan konfigurasi deployment diperlukan; persetujuan AI Direktur tidak otomatis berlaku. |
 | `director.MarketingObservation` | Laporan ringkas kanal dari sistem sebelumnya | Tetap sebagai laporan sumber terpisah, termasuk impor CSV, koreksi, dan riwayatnya. |
@@ -81,7 +82,9 @@ Fakta biaya dan fakta penerimaan diagregasi secara terpisah sebelum disandingkan
 
 | Metrik | Rumus atau basis | Interpretasi |
 |---|---|---|
-| Cash-in bruto terverifikasi | Jumlah alokasi penerimaan pada periode kas | Baru dikaitkan ke marketing jika invoice mempunyai prospek sumber. Bukan saldo bank atau laba. |
+| Cash-in bruto terverifikasi | Jumlah alokasi penerimaan pada periode kas | Baru dikaitkan ke marketing jika invoice mempunyai prospek sumber. Bukan saldo bank atau laba. KPI kas bruto dan rasio kas/biaya tetap memakai angka ini. |
+| Refund invoice aktual | Refund pembatalan invoice atau kredit invoice yang dibayar lewat bank pada periode mutasi | Kewajiban yang belum dibayar dan refund uang muka tidak dihitung. Refund invoice tanpa lead terlihat pada cakupan, tetapi tidak dibebankan ke kanal, kampanye, atau tim. |
+| Kas setelah refund | Cash-in bruto teratribusi dikurangi refund invoice aktual dari invoice dengan lead yang sama pada periode kas | Dapat negatif saat refund periode ini berasal dari penerimaan sebelumnya. Ini arus kas marketing yang tercatat, bukan laba atau ROAS kausal. |
 | Cakupan pengaitan kas | Kas dengan sumber prospek / seluruh alokasi penerimaan dalam cakupan pembanding | Kas belum terpetakan terlihat; peningkatan cakupan bukan pertumbuhan penerimaan baru. |
 | Biaya iklan dilaporkan | Jumlah biaya unik dari rincian laporan | Belum sama dengan uang yang dibayarkan Finance; nilai kosong dan sumber yang belum masuk ditandai. |
 | Tayangan, klik, biaya per klik | Tayangan, klik, biaya / klik yang tercatat | Pembagian nol atau biaya/klik tidak lengkap tidak menghasilkan rasio pasti. |
@@ -90,7 +93,7 @@ Fakta biaya dan fakta penerimaan diagregasi secara terpisah sebelum disandingkan
 | Respons pertama | Selisih waktu respons pertama dengan waktu masuk | Median lebih tahan terhadap beberapa kasus ekstrem; tampilkan cakupan data respons. |
 | Follow-up terlambat | Prospek aktif dengan jadwal lewat dan belum ditutup | Antrean tindakan saat ini; bukan ukuran historis SLA tanpa riwayat penjadwalan. |
 | Kas dibanding biaya periode | Cash-in terkait / biaya tercatat dengan dimensi dan tanggal kompatibel | Ukuran diagnostik arus kas, bukan ROAS kausal, laba, atau payback akuisisi. Lead bulan lalu dapat membayar bulan ini. |
-| Cash-in neto, CAC pembeli baru, laba kontribusi | Belum disimpulkan dari sumber yang ada | Memerlukan refund, identitas pembeli/cohort, dan biaya layanan yang sesuai. |
+| CAC pembeli baru, laba kontribusi | Belum disimpulkan dari sumber yang ada | Memerlukan identitas pembeli/cohort dan biaya layanan yang sesuai. Kas setelah refund bukan laba. |
 
 Tampilan uang memakai rupiah dan Decimal. Periode kalender menggunakan Asia/Jakarta. Rekomendasi dan hasil ekspor harus mempertahankan tanggal, filter, dasar metrik, serta batas data agar konteks tidak hilang.
 
@@ -141,14 +144,14 @@ Data bertanggal masa depan tidak diperlakukan sebagai aktual yang sudah terjadi.
 - Tidak membuat koneksi otomatis Meta Ads, Google Ads, WhatsApp, CRM, bank, atau pengiriman pesan pelanggan pada rilis ini. Akun/API belum diberikan. Pencatatan manual dan impor CSV rincian iklan per kampanye tersedia (UTF-8, 1 MB, 500 baris, validasi atomik, pengulangan identik aman); impor CSV kanal sebelumnya tetap terpisah.
 - Tidak menyalakan/mematikan iklan, menaikkan budget, membayar, mengirim pesan, atau menyetujui kebijakan melalui AI. Persetujuan anggaran tetap dimiliki modul Direktur.
 - Tidak mengubah rekap 2026 menjadi penerimaan bank atau invoice buatan.
-- Tidak menyatakan pembuktian incremental lift, atribusi multi-touch, lifetime value, atau keputusan HR otomatis.
+- Tidak menyatakan pembuktian incremental lift, atribusi multi-touch, lifetime value, atau keputusan HR otomatis. Refund hanya mencakup pengembalian invoice aktual yang sudah dicatat Finance sebagai pembatalan/kredit serta mutasi bank keluar yang cocok.
 - Belum ada worker sinkronisasi, warehouse, atau validasi konkurensi PostgreSQL dalam lingkungan lokal SQLite.
 - Satu prospek hanya dapat terhubung ke satu invoice. Pembelian ulang/multi-invoice dan koreksi pengaitan yang salah belum mempunyai workflow. Identitas kampanye, asal, penanggung jawab awal, segmen, dan wilayah prospek dipertahankan; belum ada layanan pemindahan owner atau koreksi dimensi asal. Produk/pembeli yang awalnya belum diketahui dapat dilengkapi dari invoice setelah konfirmasi eksplisit peran berwenang.
 - Tumpang tindih total dengan rincian iklan ditolak, tetapi nama audiens/wilayah bebas tidak membuktikan bahwa dua kelompok dengan nama berbeda benar-benar eksklusif. Template menggunakan rupiah dan tanggal sumber yang sudah disiapkan; konversi mata uang/zona akun dan rekonsiliasi biaya platform belum otomatis.
 
 ## Open questions untuk tahap integrasi berikutnya
 
-Keputusan berikut tidak menghalangi pencatatan dan analisis awal: akun iklan dan izin baca yang dipakai; identitas CRM/WA dan aturan deduplikasi; jam kerja/SLA resmi; target cash-in tiap periode; siapa memiliki prospek lintas fungsi; periode evaluasi cohort dan atribusi; cakupan biaya layanan serta refund; akses individual anggota; persetujuan endpoint AI dan batas biaya sesungguhnya. Nilai-nilai tersebut tidak diisi sebagai fakta perusahaan tanpa keputusan pemiliknya.
+Keputusan berikut tidak menghalangi pencatatan dan analisis awal: akun iklan dan izin baca yang dipakai; identitas CRM/WA dan aturan deduplikasi; jam kerja/SLA resmi; target cash-in tiap periode; siapa memiliki prospek lintas fungsi; periode evaluasi cohort dan atribusi; cakupan biaya layanan serta pengembalian selain refund invoice; akses individual anggota; persetujuan endpoint AI dan batas biaya sesungguhnya. Nilai-nilai tersebut tidak diisi sebagai fakta perusahaan tanpa keputusan pemiliknya.
 
 ## Handoff dan validasi
 

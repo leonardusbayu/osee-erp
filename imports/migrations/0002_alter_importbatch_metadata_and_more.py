@@ -4,20 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('imports', '0001_initial'),
+        ("imports", "0001_initial"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='importbatch',
-            name='metadata',
+            model_name="importbatch",
+            name="metadata",
             field=models.JSONField(blank=True, default=dict),
         ),
         migrations.AlterField(
-            model_name='importexception',
-            name='source_locator',
+            model_name="importexception",
+            name="source_locator",
             field=models.JSONField(blank=True, default=dict),
         ),
     ]

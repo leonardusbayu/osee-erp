@@ -1,7 +1,8 @@
 """Generate deployment secrets only on explicit invocation; never print values."""
-from pathlib import Path
-import secrets
+
 import os
+import secrets
+from pathlib import Path
 
 from cryptography.fernet import Fernet
 
@@ -10,12 +11,19 @@ def main():
     deploy_root = Path(__file__).resolve().parent
     directory = deploy_root / "secrets"
     if directory.is_symlink() or not directory.resolve().is_relative_to(deploy_root):
-        raise ValueError("Deployment secrets must use this deployment directory, without links.")
+        raise ValueError(
+            "Deployment secrets must use this deployment directory, without links."
+        )
     directory.mkdir(mode=0o700, exist_ok=True)
     if os.name != "nt":
         directory.chmod(0o700)
-    values = {"django-secret": secrets.token_urlsafe(64), "postgres-password": secrets.token_urlsafe(48),
-              "otp-key": Fernet.generate_key().decode("ascii")}
+    values = {
+        "django-secret": secrets.token_urlsafe(64),
+        "postgres-password": secrets.token_urlsafe(48),
+        "otp-key": Fernet.generate_key().decode("ascii"),
+        "openrouter-api-key": "",
+        "director-openrouter-api-key": "",
+    }
     # Existing files are immutable here: running again cannot invalidate MFA.
     for name, value in values.items():
         path = directory / name
@@ -30,7 +38,10 @@ def main():
         # 0700 directory; the files are mounted only into their named services.
         if os.name != "nt":
             path.chmod(0o444)
-    print("Deployment secret files exist. Back them up separately in a protected secret vault.")
+    print(
+        "Deployment secret files exist. "
+        "Back them up separately in a protected secret vault."
+    )
 
 
 if __name__ == "__main__":

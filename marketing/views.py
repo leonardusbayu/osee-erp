@@ -1,4 +1,5 @@
 """Scoped, server-rendered marketing workspace for everyday operational use."""
+
 from decimal import Decimal
 
 from django import forms
@@ -6,6 +7,7 @@ from django.contrib import messages
 from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
+from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -16,13 +18,31 @@ from django.views.decorators.http import require_GET, require_http_methods
 from core.access import organization_required, require_role
 from director.models import CHANNEL_CHOICES
 from finance.models import Product
+
 from . import services
-from .ai import build_recommendations, marketing_advice
+from .ai import advice_identity, build_recommendations, marketing_advice
 from .analytics import GROUP_BY_CHOICES, marketing_snapshot
-from .forms import (ActionUpdateForm, AdObservationForm, CampaignForm, InvoiceLinkForm,
-                    LeadForm, LeadUpdateForm, MarketingActionForm, MarketingAIPolicyForm,
-                    TeamMemberForm, SourceCoverageForm)
-from .models import AdDailyObservation, Campaign, Lead, MarketingAction, MarketingAIPolicy, SourceCoverage, STAGES, TeamMember
+from .forms import (
+    AdObservationForm,
+    CampaignForm,
+    InvoiceLinkForm,
+    LeadForm,
+    LeadUpdateForm,
+    MarketingActionForm,
+    MarketingAIPolicyForm,
+    SourceCoverageForm,
+    TeamMemberForm,
+)
+from .models import (
+    STAGES,
+    AdDailyObservation,
+    Campaign,
+    Lead,
+    MarketingAction,
+    MarketingAIPolicy,
+    SourceCoverage,
+    TeamMember,
+)
 
 READ = ("owner", "director", "finance", "marketing", "auditor")
 WRITE = ("owner", "director", "finance", "marketing")
@@ -31,22 +51,48 @@ TOKEN_SALT = "marketing.recommendation.v1"
 
 
 class AnalysisFilterForm(forms.Form):
-    start = forms.DateField(label="Dari tanggal", widget=forms.DateInput(attrs={"type": "date"}))
-    end = forms.DateField(label="Sampai tanggal", widget=forms.DateInput(attrs={"type": "date"}))
+    start = forms.DateField(
+        label="Dari tanggal", widget=forms.DateInput(attrs={"type": "date"})
+    )
+    end = forms.DateField(
+        label="Sampai tanggal", widget=forms.DateInput(attrs={"type": "date"})
+    )
     group_by = forms.ChoiceField(label="Bandingkan menurut", choices=GROUP_BY_CHOICES)
-    channel = forms.ChoiceField(label="Channel", required=False, choices=[("", "Semua channel"), *CHANNEL_CHOICES])
-    campaign = forms.ModelChoiceField(label="Kampanye", required=False, queryset=Campaign.objects.none())
-    member = forms.ModelChoiceField(label="Anggota tim", required=False, queryset=TeamMember.objects.none())
-    product = forms.ModelChoiceField(label="Produk", required=False, queryset=Product.objects.none())
-    segment = forms.ChoiceField(label="Jenis pembeli", required=False, choices=[("", "Semua jenis"), *Lead._meta.get_field("segment").choices])
+    channel = forms.ChoiceField(
+        label="Channel",
+        required=False,
+        choices=[("", "Semua channel"), *CHANNEL_CHOICES],
+    )
+    campaign = forms.ModelChoiceField(
+        label="Kampanye", required=False, queryset=Campaign.objects.none()
+    )
+    member = forms.ModelChoiceField(
+        label="Anggota tim", required=False, queryset=TeamMember.objects.none()
+    )
+    product = forms.ModelChoiceField(
+        label="Produk", required=False, queryset=Product.objects.none()
+    )
+    segment = forms.ChoiceField(
+        label="Jenis pembeli",
+        required=False,
+        choices=[("", "Semua jenis"), *Lead._meta.get_field("segment").choices],
+    )
     region = forms.CharField(label="Wilayah (persis)", max_length=120, required=False)
-    ad = forms.CharField(label="Nama / ID iklan (persis)", max_length=180, required=False)
+    ad = forms.CharField(
+        label="Nama / ID iklan (persis)", max_length=180, required=False
+    )
 
     def __init__(self, *args, organization, **kwargs):
         super().__init__(*args, **kwargs)
-        for name, model in (("campaign", Campaign), ("member", TeamMember), ("product", Product)):
+        for name, model in (
+            ("campaign", Campaign),
+            ("member", TeamMember),
+            ("product", Product),
+        ):
             self.fields[name].queryset = model.objects.filter(organization=organization)
-        self.fields["ad"].help_text = "Filter iklan menampilkan biaya dan klik; prospek belum dipetakan sampai iklan."
+        self.fields[
+            "ad"
+        ].help_text = "Filter iklan menampilkan biaya dan klik; prospek belum dipetakan sampai iklan."
 
     def clean(self):
         data = super().clean()
@@ -59,12 +105,19 @@ class AnalysisFilterForm(forms.Form):
 
 
 class AdImportForm(forms.Form):
-    campaign = forms.ModelChoiceField(label="Kampanye", queryset=Campaign.objects.none())
-    file = forms.FileField(label="File CSV", help_text="Gunakan template. Maksimal 1 MB; satu kampanye per file.")
+    campaign = forms.ModelChoiceField(
+        label="Kampanye", queryset=Campaign.objects.none()
+    )
+    file = forms.FileField(
+        label="File CSV",
+        help_text="Gunakan template. Maksimal 1 MB; satu kampanye per file.",
+    )
 
     def __init__(self, *args, organization, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["campaign"].queryset = Campaign.objects.filter(organization=organization)
+        self.fields["campaign"].queryset = Campaign.objects.filter(
+            organization=organization
+        )
         self.fields["file"].widget.attrs["accept"] = ".csv,text/csv"
 
     def clean_file(self):
@@ -75,13 +128,32 @@ class AdImportForm(forms.Form):
 
 
 def _context(request, nav, **values):
-    return {"active_nav": "marketing_" + nav, "is_marketing_workspace": True,
-            "marketing_write": request.membership.role in WRITE,
-            "finance_link": request.membership.role in FINANCE, **values}
+    return {
+        "active_nav": "marketing_" + nav,
+        "is_marketing_workspace": True,
+        "marketing_write": request.membership.role in WRITE,
+        "finance_link": request.membership.role in FINANCE,
+        **values,
+    }
+
+
+def _can_execute_lead(request, lead):
+    from .workflow import MANAGERS, can_act_for_member
+
+    return request.membership.role in WRITE and (
+        request.membership.role in MANAGERS
+        or can_act_for_member(
+            organization=request.organization,
+            actor=request.user,
+            member=lead.current_owner,
+        )
+    )
 
 
 def _bad(error):
-    return HttpResponse(" ".join(error.messages), status=400, content_type="text/plain; charset=utf-8")
+    return HttpResponse(
+        " ".join(error.messages), status=400, content_type="text/plain; charset=utf-8"
+    )
 
 
 def _form_error(form, error):
@@ -101,26 +173,58 @@ def _version(request):
             raise ValueError
         return value
     except (TypeError, ValueError) as exc:
-        raise ValidationError("Versi data tidak valid. Muat ulang halaman sebelum menyimpan.") from exc
+        raise ValidationError(
+            "Versi data tidak valid. Muat ulang halaman sebelum menyimpan."
+        ) from exc
 
 
 def _scope(request, data=None):
     today = timezone.localdate()
-    values = {"start": today.replace(day=1).isoformat(), "end": today.isoformat(), "group_by": "channel"}
+    values = {
+        "start": today.replace(day=1).isoformat(),
+        "end": today.isoformat(),
+        "group_by": "channel",
+    }
     source = request.GET if data is None else data
-    values.update({key: source.get(key) for key in AnalysisFilterForm.base_fields if key in source})
+    values.update(
+        {
+            key: source.get(key)
+            for key in AnalysisFilterForm.base_fields
+            if key in source
+        }
+    )
     form = AnalysisFilterForm(values, organization=request.organization)
     if not form.is_valid():
         errors = [str(message) for errors in form.errors.values() for message in errors]
         raise ValidationError(errors)
     cleaned = form.cleaned_data
-    filters = {key: value.pk if hasattr(value, "pk") else value for key, value in cleaned.items()
-               if key not in ("start", "end", "group_by") and value not in (None, "")}
-    snapshot = marketing_snapshot(organization=request.organization, start=cleaned["start"],
-                                  end=cleaned["end"], group_by=cleaned["group_by"], filters=filters)
-    return {"snapshot": snapshot, "filter_form": form, "start": cleaned["start"], "end": cleaned["end"],
-            "group_by": cleaned["group_by"], "filters": filters,
-            "active_filters": len(filters), "dimension_label": dict(GROUP_BY_CHOICES)[cleaned["group_by"]]}
+    filters = {
+        key: value.pk if hasattr(value, "pk") else value
+        for key, value in cleaned.items()
+        if key not in ("start", "end", "group_by") and value not in (None, "")
+    }
+    snapshot = marketing_snapshot(
+        organization=request.organization,
+        start=cleaned["start"],
+        end=cleaned["end"],
+        group_by=cleaned["group_by"],
+        filters=filters,
+    )
+    from .management import management_snapshot
+
+    snapshot["management"] = management_snapshot(
+        organization=request.organization, start=cleaned["start"], end=cleaned["end"]
+    )
+    return {
+        "snapshot": snapshot,
+        "filter_form": form,
+        "start": cleaned["start"],
+        "end": cleaned["end"],
+        "group_by": cleaned["group_by"],
+        "filters": filters,
+        "active_filters": len(filters),
+        "dimension_label": dict(GROUP_BY_CHOICES)[cleaned["group_by"]],
+    }
 
 
 def _page(request, rows):
@@ -137,8 +241,20 @@ def _pagination_query(request):
 
 
 def _form_page(request, form, title, description, nav, back, **extra):
-    return render(request, "marketing/form.html", _context(request, nav, form=form,
-                  page_title=title, description=description, section_label=nav.upper(), back_url=reverse(back), **extra))
+    return render(
+        request,
+        "marketing/form.html",
+        _context(
+            request,
+            nav,
+            form=form,
+            page_title=title,
+            description=description,
+            section_label=nav.upper(),
+            back_url=reverse(back),
+            **extra,
+        ),
+    )
 
 
 @require_GET
@@ -150,9 +266,37 @@ def overview(request):
     except ValidationError as exc:
         return _bad(exc)
     advice = build_recommendations(scope["snapshot"])
-    actions = MarketingAction.objects.filter(organization=request.organization, status__in=("open", "in_progress")).select_related("owner")[:4]
-    return render(request, "marketing/overview.html", _context(request, "overview", **scope,
-                  recommendations=advice["recommendations"], actions=actions))
+    actions = MarketingAction.objects.filter(
+        organization=request.organization, status__in=("open", "in_progress")
+    ).select_related("owner")[:4]
+    from .activity_models import WorkActivity
+    from .kpi_models import KpiTarget
+
+    today = timezone.localdate()
+    targets = KpiTarget.objects.filter(organization=request.organization)
+    work = WorkActivity.objects.filter(organization=request.organization)
+    accountability = {
+        "active_targets": targets.filter(
+            status="active", period_start__lte=today, period_end__gte=today
+        ).count(),
+        "draft_targets": targets.filter(status="draft").count(),
+        "awaiting_review": work.filter(status="submitted").count(),
+        "overdue_work": work.filter(
+            status__in=("planned", "in_progress", "needs_revision"), due_date__lt=today
+        ).count(),
+    }
+    return render(
+        request,
+        "marketing/overview.html",
+        _context(
+            request,
+            "overview",
+            **scope,
+            recommendations=advice["recommendations"],
+            actions=actions,
+            accountability=accountability,
+        ),
+    )
 
 
 @require_GET
@@ -164,27 +308,51 @@ def analysis(request):
     except ValidationError as exc:
         return _bad(exc)
     if scope["group_by"] == "member":
-        members = {str(member.pk): member for member in TeamMember.objects.filter(organization=request.organization)}
+        members = {
+            str(member.pk): member
+            for member in TeamMember.objects.filter(organization=request.organization)
+        }
         for row in scope["snapshot"]["rows"]:
             member = members.get(row["key"])
             if member:
-                row["member_context"] = f"{member.get_discipline_display()} · {member.team}"
-    chart_rows = [dict(row) for row in scope["snapshot"]["rows"] if row["cash_in"] is not None and Decimal(row["cash_in"]) > 0]
+                row["member_context"] = (
+                    f"{member.get_discipline_display()} · {member.team}"
+                )
+    chart_rows = [
+        dict(row)
+        for row in scope["snapshot"]["rows"]
+        if row["cash_in"] is not None and Decimal(row["cash_in"]) > 0
+    ]
     chart_rows.sort(key=lambda row: Decimal(row["cash_in"]), reverse=True)
     maximum = max((Decimal(row["cash_in"]) for row in chart_rows), default=Decimal(0))
     for row in chart_rows:
         row["bar_width"] = format(Decimal(row["cash_in"]) / maximum * 100, ".2f")
-    return render(request, "marketing/analysis.html", _context(request, "analysis", **scope, chart_rows=chart_rows[:10]))
+    return render(
+        request,
+        "marketing/analysis.html",
+        _context(request, "analysis", **scope, chart_rows=chart_rows[:10]),
+    )
 
 
 @require_GET
 @organization_required
 def leads(request):
     require_role(request, *READ)
-    query, stage, due = request.GET.get("q", "").strip(), request.GET.get("stage", ""), request.GET.get("due", "")
-    if len(query) > 100 or stage and stage not in dict(STAGES) or due not in ("", "overdue"):
+    query, stage, due = (
+        request.GET.get("q", "").strip(),
+        request.GET.get("stage", ""),
+        request.GET.get("due", ""),
+    )
+    if (
+        len(query) > 100
+        or stage
+        and stage not in dict(STAGES)
+        or due not in ("", "overdue")
+    ):
         return _bad(ValidationError("Filter prospek tidak valid."))
-    rows = Lead.objects.filter(organization=request.organization).select_related("campaign", "owner", "product")
+    rows = Lead.objects.filter(organization=request.organization).select_related(
+        "campaign", "owner", "product"
+    )
     if query:
         rows = rows.filter(Q(name__icontains=query) | Q(reference__icontains=query))
     if stage:
@@ -193,41 +361,98 @@ def leads(request):
         from finance.settlement import collectible_amounts
 
         today = timezone.localdate()
-        rows = rows.filter(next_follow_up__lt=today).exclude(stage="lost").select_related("invoice")
+        rows = (
+            rows.filter(next_follow_up__lt=today)
+            .exclude(stage="lost")
+            .select_related("invoice")
+        )
         rows = list(rows)
-        collectible = collectible_amounts(organization=request.organization,
-            invoice_ids=[lead.invoice_id for lead in rows if lead.invoice_id], as_of=today)
-        unpaid_ids = [lead.pk for lead in rows if not lead.invoice_id or collectible.get(lead.invoice_id, Decimal(0)) > 0]
-        rows = Lead.objects.filter(organization=request.organization, pk__in=unpaid_ids).select_related("campaign", "owner", "product")
+        collectible = collectible_amounts(
+            organization=request.organization,
+            invoice_ids=[lead.invoice_id for lead in rows if lead.invoice_id],
+            as_of=today,
+        )
+        unpaid_ids = [
+            lead.pk
+            for lead in rows
+            if not lead.invoice_id or collectible.get(lead.invoice_id, Decimal(0)) > 0
+        ]
+        rows = Lead.objects.filter(
+            organization=request.organization, pk__in=unpaid_ids
+        ).select_related("campaign", "owner", "product")
     try:
         page = _page(request, rows)
     except ValidationError as exc:
         return _bad(exc)
-    return render(request, "marketing/leads.html", _context(request, "leads", page=page, query=query,
-                  stage=stage, due=due, stages=STAGES, pagination_query=_pagination_query(request)))
+    return render(
+        request,
+        "marketing/leads.html",
+        _context(
+            request,
+            "leads",
+            page=page,
+            query=query,
+            stage=stage,
+            due=due,
+            stages=STAGES,
+            pagination_query=_pagination_query(request),
+        ),
+    )
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
 def lead_create(request):
     require_role(request, *WRITE)
-    form = LeadForm(request.POST or None, organization=request.organization,
-                    initial={"received_at": timezone.localtime().replace(second=0, microsecond=0)})
+    form = LeadForm(
+        request.POST or None,
+        organization=request.organization,
+        initial={"received_at": timezone.localtime().replace(second=0, microsecond=0)},
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            lead = services.create_lead(organization=request.organization, actor=request.user, **form.cleaned_data)
-            messages.success(request, "Prospek dicatat. Lanjutkan dengan respons dan jadwal tindak lanjut.")
+            lead = services.create_lead(
+                organization=request.organization,
+                actor=request.user,
+                **form.cleaned_data,
+            )
+            messages.success(
+                request,
+                "Prospek dicatat. Lanjutkan dengan respons dan jadwal tindak lanjut.",
+            )
             return redirect("marketing:lead_detail", pk=lead.pk)
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Catat prospek", "Mulai dengan asal prospek, kebutuhan, dan penanggung jawabnya.", "leads", "marketing:leads")
+    return _form_page(
+        request,
+        form,
+        "Catat prospek",
+        "Mulai dengan asal prospek, kebutuhan, dan penanggung jawabnya.",
+        "leads",
+        "marketing:leads",
+    )
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
 def lead_detail(request, pk):
+    from .workflow import MANAGERS
+
     require_role(request, *READ)
-    lead = get_object_or_404(Lead.objects.select_related("campaign", "owner", "product", "party", "invoice"), organization=request.organization, pk=pk)
+    lead = get_object_or_404(
+        Lead.objects.select_related(
+            "campaign", "owner", "current_owner", "product", "party", "invoice"
+        ),
+        organization=request.organization,
+        pk=pk,
+    )
+    from .identity_recovery import identity_recovery_context
+    from .identity_views import legacy_review_rows
+
+    invoice_recovery = identity_recovery_context(
+        organization=request.organization, lead=lead
+    )
+    lead = invoice_recovery["lead"]
     operation = request.POST.get("operation", "update")
     if request.method == "POST":
         require_role(request, *WRITE)
@@ -235,39 +460,143 @@ def lead_detail(request, pk):
             return _bad(ValidationError("Tindakan prospek tidak valid."))
         if operation == "link_invoice":
             require_role(request, *FINANCE)
-    update_form = LeadUpdateForm(request.POST if request.method == "POST" and operation == "update" else None,
-                                 organization=request.organization, instance=lead)
-    invoice_form = InvoiceLinkForm(request.POST if request.method == "POST" and operation == "link_invoice" else None,
-                                   organization=request.organization, lead=lead) if request.membership.role in FINANCE else None
-    if request.method == "POST":
+    update_form = LeadUpdateForm(
+        request.POST if request.method == "POST" and operation == "update" else None,
+        organization=request.organization,
+        instance=lead,
+    )
+    invoice_data = (
+        request.POST
+        if request.method == "POST" and operation == "link_invoice"
+        else None
+    )
+    invoice_rechecked = False
+    if invoice_data is not None and invoice_data.get("review_action") == "recheck":
+        if not any(
+            len(invoice_data.getlist(name)) > 1
+            for name in (
+                *InvoiceLinkForm.base_fields,
+                "expected_version",
+                "operation",
+                "review_action",
+            )
+        ):
+            invoice_data = invoice_data.copy()
+            invoice_data["expected_version"] = lead.version
+            invoice_data["expected_fingerprint"] = invoice_recovery["fingerprint"]
+            for name in ("confirm_identity", "confirm_legacy_source"):
+                invoice_data.pop(name, None)
+            invoice_rechecked = True
+    invoice_form = (
+        InvoiceLinkForm(
+            invoice_data,
+            organization=request.organization,
+            lead=lead,
+            recovery=invoice_recovery,
+            initial={"expected_fingerprint": invoice_recovery["fingerprint"]},
+        )
+        if request.membership.role in FINANCE
+        else None
+    )
+    if request.method == "POST" and not invoice_rechecked:
         form = invoice_form if operation == "link_invoice" else update_form
         if form.is_valid():
             try:
                 if operation == "link_invoice":
-                    services.link_invoice(organization=request.organization, actor=request.user, lead=lead,
-                                          expected_version=_version(request), **form.cleaned_data)
+                    services.link_invoice(
+                        organization=request.organization,
+                        actor=request.user,
+                        lead=lead,
+                        expected_version=_version(request),
+                        **form.cleaned_data,
+                    )
                 else:
-                    services.update_lead(organization=request.organization, actor=request.user, lead=lead,
-                                         expected_version=_version(request), **form.cleaned_data)
-                messages.success(request, "Invoice terhubung." if operation == "link_invoice" else "Tindak lanjut disimpan.")
+                    services.update_lead(
+                        organization=request.organization,
+                        actor=request.user,
+                        lead=lead,
+                        expected_version=_version(request),
+                        **form.cleaned_data,
+                    )
+                messages.success(
+                    request,
+                    "Invoice terhubung."
+                    if operation == "link_invoice"
+                    else "Tindak lanjut disimpan.",
+                )
                 return redirect("marketing:lead_detail", pk=lead.pk)
             except ValidationError as exc:
                 _form_error(form, exc)
-    return render(request, "marketing/lead_detail.html", _context(request, "leads", lead=lead,
-                  update_form=update_form, invoice_form=invoice_form))
+                if operation == "link_invoice":
+                    invoice_recovery = identity_recovery_context(
+                        organization=request.organization, lead=lead
+                    )
+                    lead = invoice_recovery["lead"]
+    return render(
+        request,
+        "marketing/lead_detail.html",
+        _context(
+            request,
+            "leads",
+            lead=lead,
+            update_form=update_form,
+            invoice_form=invoice_form,
+            can_assign=request.membership.role in MANAGERS,
+            can_execute=_can_execute_lead(request, lead),
+            can_write_identity=request.membership.role in ("owner", "finance"),
+            invoice_recovery=invoice_recovery,
+            invoice_rechecked=invoice_rechecked,
+            invoice_expected_version=invoice_data.get("expected_version", "")
+            if invoice_data is not None
+            else lead.version,
+            invoice_review_stale=bool(
+                invoice_data is not None
+                and (
+                    str(invoice_data.get("expected_version", "")) != str(lead.version)
+                    or invoice_recovery["legacy_review_required"]
+                    and invoice_data.get("expected_fingerprint")
+                    != invoice_recovery["fingerprint"]
+                )
+            ),
+            legacy_history=legacy_review_rows(
+                organization=request.organization, recovery=invoice_recovery
+            ),
+        ),
+    )
 
 
 @require_GET
 @organization_required
 def campaigns(request):
+    from .ad_sources import active_ad_observations
+
     require_role(request, *READ)
+    history = request.GET.get("history", "0")
+    if history not in ("0", "1"):
+        return _bad(ValidationError("Pilih catatan aktif atau seluruh riwayat."))
     try:
-        page = _page(request, AdDailyObservation.objects.filter(organization=request.organization).select_related("campaign"))
+        rows = (
+            AdDailyObservation.objects.filter(organization=request.organization)
+            if history == "1"
+            else active_ad_observations(organization=request.organization)
+        )
+        page = _page(request, rows.select_related("campaign"))
     except ValidationError as exc:
         return _bad(exc)
-    return render(request, "marketing/campaigns.html", _context(request, "campaigns", page=page,
-                  campaigns=Campaign.objects.filter(organization=request.organization).select_related("owner", "product"),
-                  pagination_query=_pagination_query(request)))
+    return render(
+        request,
+        "marketing/campaigns.html",
+        _context(
+            request,
+            "campaigns",
+            page=page,
+            ads_history=history == "1",
+            campaigns=Campaign.objects.filter(
+                organization=request.organization
+            ).select_related("owner", "product"),
+            pagination_query=_pagination_query(request),
+        ),
+    )
 
 
 @require_GET
@@ -277,13 +606,23 @@ def coverage(request):
 
     require_role(request, *READ)
     try:
-        page = _page(request, SourceCoverage.objects.filter(organization=request.organization).select_related("campaign", "created_by"))
+        page = _page(
+            request,
+            SourceCoverage.objects.filter(
+                organization=request.organization
+            ).select_related("campaign", "created_by"),
+        )
     except ValidationError as exc:
         return _bad(exc)
     for declaration in page:
         declaration.is_current = declaration_current(declaration)
-    return render(request, "marketing/coverage.html", _context(request, "campaigns", page=page,
-                  pagination_query=_pagination_query(request)))
+    return render(
+        request,
+        "marketing/coverage.html",
+        _context(
+            request, "campaigns", page=page, pagination_query=_pagination_query(request)
+        ),
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -293,14 +632,28 @@ def coverage_create(request):
     form = SourceCoverageForm(request.POST or None, organization=request.organization)
     if request.method == "POST" and form.is_valid():
         try:
-            services.confirm_source_coverage(organization=request.organization, actor=request.user, **form.cleaned_data)
-            messages.success(request, "Konfirmasi cakupan pengguna disimpan beserta dasar pemeriksaannya.")
+            services.confirm_source_coverage(
+                organization=request.organization,
+                actor=request.user,
+                **form.cleaned_data,
+            )
+            messages.success(
+                request,
+                "Konfirmasi cakupan pengguna disimpan beserta dasar pemeriksaannya.",
+            )
             return redirect("marketing:coverage")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Konfirmasi cakupan sumber", "Bandingkan catatan dengan seluruh laporan sumber kampanye pada interval ini.",
-                      "campaigns", "marketing:coverage", note_title="Konfirmasi manusia, bukan verifikasi platform",
-                      note="Hari tanpa catatan tidak otomatis nol. Simpan bukti cakupan dan total sumber. Perubahan data iklan membuat konfirmasi perlu ditinjau ulang. Untuk koreksi, tarik konfirmasi lama dan catat yang baru.")
+    return _form_page(
+        request,
+        form,
+        "Konfirmasi cakupan sumber",
+        "Bandingkan catatan dengan seluruh laporan sumber kampanye pada interval ini.",
+        "campaigns",
+        "marketing:coverage",
+        note_title="Konfirmasi manusia, bukan verifikasi platform",
+        note="Hari tanpa catatan tidak otomatis nol. Simpan bukti cakupan dan total sumber. Perubahan data iklan membuat konfirmasi perlu ditinjau ulang. Untuk koreksi, tarik konfirmasi lama dan catat yang baru.",
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -309,26 +662,48 @@ def coverage_withdraw(request, pk):
     from director.forms import ReasonForm
 
     require_role(request, *WRITE)
-    declaration = get_object_or_404(SourceCoverage, organization=request.organization, pk=pk)
+    declaration = get_object_or_404(
+        SourceCoverage, organization=request.organization, pk=pk
+    )
     form = ReasonForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         try:
-            services.withdraw_source_coverage(organization=request.organization, actor=request.user,
-                                              declaration=declaration, **form.cleaned_data)
-            messages.success(request, "Konfirmasi cakupan ditarik. Riwayat dan alasan tetap tersimpan.")
+            services.withdraw_source_coverage(
+                organization=request.organization,
+                actor=request.user,
+                declaration=declaration,
+                **form.cleaned_data,
+            )
+            messages.success(
+                request,
+                "Konfirmasi cakupan ditarik. Riwayat dan alasan tetap tersimpan.",
+            )
             return redirect("marketing:coverage")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Tarik konfirmasi cakupan", declaration.reference, "campaigns", "marketing:coverage",
-                      note="Penarikan menghapus dasar rekomendasi periode yang memakai konfirmasi ini. Catatan biaya iklan tetap tersedia. Buat konfirmasi baru setelah pemeriksaan ulang.")
+    return _form_page(
+        request,
+        form,
+        "Tarik konfirmasi cakupan",
+        declaration.reference,
+        "campaigns",
+        "marketing:coverage",
+        note="Penarikan menghapus dasar rekomendasi periode yang memakai konfirmasi ini. Catatan biaya iklan tetap tersedia. Buat konfirmasi baru setelah pemeriksaan ulang.",
+    )
 
 
 def _create(request, form_class, service, title, description, nav, back, initial=None):
     require_role(request, *WRITE)
-    form = form_class(request.POST or None, organization=request.organization, initial=initial)
+    form = form_class(
+        request.POST or None, organization=request.organization, initial=initial
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            service(organization=request.organization, actor=request.user, **form.cleaned_data)
+            service(
+                organization=request.organization,
+                actor=request.user,
+                **form.cleaned_data,
+            )
             messages.success(request, "Catatan marketing disimpan.")
             return redirect(back)
         except ValidationError as exc:
@@ -339,55 +714,129 @@ def _create(request, form_class, service, title, description, nav, back, initial
 @require_http_methods(["GET", "POST"])
 @organization_required
 def campaign_create(request):
-    return _create(request, CampaignForm, services.create_campaign, "Buat kampanye", "Hubungkan aktivitas iklan dan prospek melalui satu kampanye.", "campaigns", "marketing:campaigns")
+    return _create(
+        request,
+        CampaignForm,
+        services.create_campaign,
+        "Buat kampanye",
+        "Hubungkan aktivitas iklan dan prospek melalui satu kampanye.",
+        "campaigns",
+        "marketing:campaigns",
+    )
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
 def ad_create(request):
-    return _create(request, AdObservationForm, services.save_ad_observation, "Catat hasil iklan", "Isi angka sesuai laporan platform. Kosong berarti belum diketahui.", "campaigns", "marketing:campaigns", {"date": timezone.localdate()})
+    return _create(
+        request,
+        AdObservationForm,
+        services.save_ad_observation,
+        "Catat hasil iklan",
+        "Isi angka sesuai laporan platform. Kosong berarti belum diketahui.",
+        "campaigns",
+        "marketing:campaigns",
+        {"date": timezone.localdate()},
+    )
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
 def ad_correct(request, pk):
     require_role(request, *WRITE)
-    observation = get_object_or_404(AdDailyObservation, organization=request.organization, pk=pk)
-    form = AdObservationForm(request.POST or None, organization=request.organization, instance=observation)
+    observation = get_object_or_404(
+        AdDailyObservation, organization=request.organization, pk=pk
+    )
+    if observation.withdrawn_at:
+        messages.warning(
+            request,
+            "Laporan sudah ditarik atau diganti. Gunakan versi aktif dari riwayat untuk memperbaiki angka.",
+        )
+        return redirect("marketing:ad_detail", pk=observation.pk)
+    form = AdObservationForm(
+        request.POST or None, organization=request.organization, instance=observation
+    )
     for name in ("campaign", "date", "ad_name", "audience", "region", "reference"):
         form.fields[name].disabled = True
-    form.fields["reason"] = forms.CharField(label="Alasan koreksi", max_length=500, widget=forms.Textarea(attrs={"rows": 3}),
-                                           help_text="Jelaskan perubahan pada laporan sumber. Angka sebelum dan sesudah disimpan dalam riwayat audit.")
+    form.fields["reason"] = forms.CharField(
+        label="Alasan koreksi",
+        max_length=500,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        help_text="Jelaskan perubahan pada laporan sumber. Angka sebelum dan sesudah disimpan dalam riwayat audit.",
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            services.save_ad_observation(organization=request.organization, actor=request.user, observation=observation,
-                                         expected_version=_version(request), **form.cleaned_data)
+            services.save_ad_observation(
+                organization=request.organization,
+                actor=request.user,
+                observation=observation,
+                expected_version=_version(request),
+                **form.cleaned_data,
+            )
             messages.success(request, "Koreksi hasil iklan disimpan beserta alasannya.")
             return redirect("marketing:campaigns")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Koreksi hasil iklan", "Perbarui angka sesuai sumber dan jelaskan alasannya.", "campaigns", "marketing:campaigns",
-                      expected_version=observation.version, note_title="Koreksi yang dapat ditelusuri",
-                      note="Kampanye, tanggal, rincian iklan, dan referensi dipertahankan sebagai identitas sumber. Koreksi hanya mengubah angka laporan serta sumber, dengan alasan dan versi data.")
+    return _form_page(
+        request,
+        form,
+        "Koreksi hasil iklan",
+        "Perbarui angka sesuai sumber dan jelaskan alasannya.",
+        "campaigns",
+        "marketing:campaigns",
+        expected_version=request.POST.get("expected_version", "")
+        if request.method == "POST"
+        else observation.version,
+        note_title="Koreksi yang dapat ditelusuri",
+        note="Kampanye, tanggal, rincian iklan, dan referensi dipertahankan sebagai identitas sumber. Koreksi hanya mengubah angka laporan serta sumber, dengan alasan dan versi data.",
+    )
 
 
 @require_GET
 @organization_required
 def members(request):
     require_role(request, *READ)
-    return render(request, "marketing/members.html", _context(request, "members", members=TeamMember.objects.filter(organization=request.organization)))
+    return render(
+        request,
+        "marketing/members.html",
+        _context(
+            request,
+            "members",
+            members=TeamMember.objects.filter(
+                organization=request.organization
+            ).select_related("account"),
+        ),
+    )
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
 def member_create(request):
-    return _create(request, TeamMemberForm, services.create_member, "Tambah anggota tim", "Tentukan peran kerja untuk membagi tindak lanjut dan membaca kontribusi secara adil.", "members", "marketing:members")
+    return _create(
+        request,
+        TeamMemberForm,
+        services.create_member,
+        "Tambah anggota tim",
+        "Tentukan peran kerja untuk membagi tindak lanjut dan membaca kontribusi secara adil.",
+        "members",
+        "marketing:members",
+    )
 
 
 def _recommendation_token(request, scope, recommendation):
-    return signing.dumps({"organization": request.organization.pk, "id": recommendation["id"],
-                          "start": scope["start"].isoformat(), "end": scope["end"].isoformat(),
-                          "group_by": scope["group_by"], **scope["filters"]}, salt=TOKEN_SALT, compress=True)
+    return signing.dumps(
+        {
+            "organization": request.organization.pk,
+            "id": recommendation["id"],
+            "start": scope["start"].isoformat(),
+            "end": scope["end"].isoformat(),
+            "group_by": scope["group_by"],
+            **scope["filters"],
+            "source_identity": advice_identity(scope["snapshot"]),
+        },
+        salt=TOKEN_SALT,
+        compress=True,
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -398,10 +847,17 @@ def advisor(request):
         require_role(request, *WRITE)
     try:
         scope = _scope(request, request.POST if request.method == "POST" else None)
-        page = _page(request, MarketingAction.objects.filter(organization=request.organization).select_related("owner"))
+        page = _page(
+            request,
+            MarketingAction.objects.filter(
+                organization=request.organization
+            ).select_related("owner"),
+        )
     except ValidationError as exc:
         return _bad(exc)
-    question = request.POST.get("question", "").strip() if request.method == "POST" else ""
+    question = (
+        request.POST.get("question", "").strip() if request.method == "POST" else ""
+    )
     question_error = ""
     advice = build_recommendations(scope["snapshot"])
     if request.method == "POST":
@@ -409,15 +865,37 @@ def advisor(request):
             question_error = "Tulis pertanyaan antara 1 dan 1.000 karakter."
         else:
             try:
-                advice = marketing_advice(organization=request.organization, actor=request.user,
-                                          snapshot=scope["snapshot"], question=question)
+                advice = marketing_advice(
+                    organization=request.organization,
+                    actor=request.user,
+                    snapshot=scope["snapshot"],
+                    question=question,
+                )
             except ValidationError as exc:
                 question_error = " ".join(exc.messages)
     for recommendation in advice["recommendations"]:
-        recommendation["action_token"] = _recommendation_token(request, scope, recommendation)
-        recommendation["priority_label"] = "Prioritas tinggi" if recommendation["priority"] == "high" else "Tinjau bersama tim"
-    return render(request, "marketing/advisor.html", _context(request, "advisor", **scope, advice=advice,
-                  question=question, question_error=question_error, page=page, pagination_query=_pagination_query(request)))
+        recommendation["action_token"] = _recommendation_token(
+            request, scope, recommendation
+        )
+        recommendation["priority_label"] = (
+            "Prioritas tinggi"
+            if recommendation["priority"] == "high"
+            else "Tinjau bersama tim"
+        )
+    return render(
+        request,
+        "marketing/advisor.html",
+        _context(
+            request,
+            "advisor",
+            **scope,
+            advice=advice,
+            question=question,
+            question_error=question_error,
+            page=page,
+            pagination_query=_pagination_query(request),
+        ),
+    )
 
 
 def _verified_recommendation(request, token):
@@ -426,61 +904,145 @@ def _verified_recommendation(request, token):
         if data["organization"] != request.organization.pk:
             raise signing.BadSignature
         scope = _scope(request, data)
-        recommendation = next((item for item in build_recommendations(scope["snapshot"])["recommendations"] if item["id"] == data["id"]), None)
+        if data.get("source_identity") != advice_identity(scope["snapshot"]):
+            raise ValidationError(
+                "Data sumber berubah sejak saran ditampilkan. Isian Anda tetap tersedia; buka Saran Manager dan periksa saran terbaru sebelum menetapkan pekerjaan."
+            )
+        recommendation = next(
+            (
+                item
+                for item in build_recommendations(scope["snapshot"])["recommendations"]
+                if item["id"] == data["id"]
+            ),
+            None,
+        )
         if recommendation is None:
-            raise ValidationError("Data telah berubah dan saran ini tidak lagi berlaku. Buka Saran Manager untuk memperbaruinya.")
+            raise ValidationError(
+                "Data telah berubah dan saran ini tidak lagi berlaku. Buka Saran Manager untuk memperbaruinya."
+            )
         return recommendation
     except (signing.BadSignature, KeyError, TypeError) as exc:
-        raise ValidationError("Saran tidak valid atau telah kedaluwarsa. Pilih kembali dari Saran Manager.") from exc
+        raise ValidationError(
+            "Saran tidak valid atau telah kedaluwarsa. Pilih kembali dari Saran Manager."
+        ) from exc
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
+@transaction.atomic
 def action_create(request):
+    from .action_workflow import create_action_work
+    from .activity_models import ACTIVITY_KINDS
+
     require_role(request, *WRITE)
-    token = request.POST.get("recommendation_token", "") if request.method == "POST" else request.GET.get("recommendation_token", "")
-    recommendation, initial = None, {}
+    token = (
+        request.POST.get("recommendation_token", "")
+        if request.method == "POST"
+        else request.GET.get("recommendation_token", "")
+    )
+    recommendation, initial, recommendation_error = None, {}, None
     if token:
         try:
             recommendation = _verified_recommendation(request, token)
         except ValidationError as exc:
-            return _bad(exc)
-        initial = {"title": recommendation["title"], "description": recommendation["action"],
-                   "evidence": recommendation["evidence"], "metric_key": recommendation["metric_key"]}
-    form = MarketingActionForm(request.POST or None, organization=request.organization, initial=initial)
+            if request.method != "POST":
+                return _bad(exc)
+            recommendation_error = exc
+        if recommendation:
+            initial = {
+                "title": recommendation["title"],
+                "description": recommendation["action"],
+                "evidence": recommendation["evidence"],
+                "metric_key": recommendation["metric_key"],
+            }
+    form = MarketingActionForm(
+        request.POST or None, organization=request.organization, initial=initial
+    )
     form.fields["owner"].required = True
     form.fields["due_date"].required = True
+    form.fields["channel"] = forms.ChoiceField(
+        label="Channel pekerjaan", choices=CHANNEL_CHOICES
+    )
+    form.fields["kind"] = forms.ChoiceField(
+        label="Jenis pekerjaan", choices=ACTIVITY_KINDS
+    )
     if recommendation:
         for field in ("title", "description", "evidence", "metric_key"):
             form.fields[field].disabled = True
-    if request.method == "POST" and form.is_valid():
+    if recommendation_error:
+        _form_error(form, recommendation_error)
+    if request.method == "POST" and form.is_valid() and recommendation_error is None:
         try:
-            action = services.create_action(organization=request.organization, actor=request.user, **form.cleaned_data)
-            messages.success(request, "Tindakan ditetapkan. Evaluasi hasilnya setelah dikerjakan.")
-            return redirect("marketing:action_detail", pk=action.pk)
+            work = create_action_work(
+                organization=request.organization,
+                actor=request.user,
+                **form.cleaned_data,
+            )
+            messages.success(
+                request,
+                "Saran menjadi pekerjaan. Ajukan bukti pelaksanaan untuk diperiksa sebelum dinyatakan diterima.",
+            )
+            return redirect("marketing:activity_detail", pk=work.pk)
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Tetapkan tindakan", "Pilih penanggung jawab dan tenggat untuk mengubah temuan menjadi perbaikan.", "advisor", "marketing:advisor",
-                      recommendation=recommendation, recommendation_token=token, note_title="Tindakan dengan dasar yang jelas")
+    response = _form_page(
+        request,
+        form,
+        "Tetapkan tindakan",
+        "Pilih penanggung jawab dan tenggat untuk mengubah temuan menjadi perbaikan.",
+        "advisor",
+        "marketing:advisor",
+        recommendation=recommendation,
+        recommendation_token=token,
+        note_title="Tindakan dengan dasar yang jelas",
+    )
+    if recommendation_error:
+        response.status_code = 400
+    return response
 
 
 @require_http_methods(["GET", "POST"])
 @organization_required
 def action_detail(request, pk):
+    from .action_workflow import adopt_action, current_work
+    from .activity_models import ACTIVITY_KINDS, WorkActivity
+
     require_role(request, *READ)
-    action = get_object_or_404(MarketingAction.objects.select_related("owner"), organization=request.organization, pk=pk)
+    action = get_object_or_404(
+        MarketingAction.objects.select_related("owner"),
+        organization=request.organization,
+        pk=pk,
+    )
+    linked = WorkActivity.objects.filter(
+        organization=request.organization, legacy_action=action
+    ).first()
+    if linked:
+        return redirect("marketing:activity_detail", pk=current_work(linked).pk)
     if request.method == "POST":
         require_role(request, *WRITE)
-    form = ActionUpdateForm(request.POST or None, organization=request.organization, instance=action)
+
+    class AdoptionForm(forms.Form):
+        channel = forms.ChoiceField(label="Channel pekerjaan", choices=CHANNEL_CHOICES)
+        kind = forms.ChoiceField(label="Jenis pekerjaan", choices=ACTIVITY_KINDS)
+
+    form = AdoptionForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         try:
-            services.update_action(organization=request.organization, actor=request.user, action=action,
-                                   expected_version=_version(request), **form.cleaned_data)
-            messages.success(request, "Hasil tindakan disimpan.")
-            return redirect("marketing:action_detail", pk=action.pk)
+            work = adopt_action(
+                organization=request.organization,
+                actor=request.user,
+                action=action,
+                expected_version=_version(request),
+                **form.cleaned_data,
+            )
+            return redirect("marketing:activity_detail", pk=work.pk)
         except ValidationError as exc:
             _form_error(form, exc)
-    return render(request, "marketing/action_detail.html", _context(request, "advisor", action=action, form=form))
+    return render(
+        request,
+        "marketing/action_detail.html",
+        _context(request, "advisor", action=action, form=form),
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -488,19 +1050,35 @@ def action_detail(request, pk):
 def ai_policy(request):
     require_role(request, "owner")
     policy = MarketingAIPolicy.objects.filter(organization=request.organization).first()
-    form = MarketingAIPolicyForm(request.POST or None, initial={"enabled": policy.enabled if policy else False,
-                                "monthly_budget_usd": policy.monthly_budget_usd if policy else 0,
-                                "request_cap_usd": policy.request_cap_usd if policy else 0})
+    form = MarketingAIPolicyForm(
+        request.POST or None,
+        initial={
+            "enabled": policy.enabled if policy else False,
+            "monthly_budget_usd": policy.monthly_budget_usd if policy else 0,
+            "request_cap_usd": policy.request_cap_usd if policy else 0,
+        },
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            services.configure_marketing_ai_policy(organization=request.organization, actor=request.user, **form.cleaned_data)
+            services.configure_marketing_ai_policy(
+                organization=request.organization,
+                actor=request.user,
+                **form.cleaned_data,
+            )
             messages.success(request, "Kebijakan AI marketing disimpan.")
             return redirect("marketing:advisor")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Pengaturan AI marketing", "Persetujuan pemilik untuk pemrosesan agregat oleh penyedia model AI.", "advisor", "marketing:advisor",
-                      note_title="Data yang dikirim ke penyedia AI",
-                      note="Jika diaktifkan dan koneksi tersedia, OpenRouter menerima angka agregat marketing serta kode saran untuk mengurutkan prioritas. Nama prospek, identitas anggota, nama kampanye, dan pertanyaan Anda tetap lokal. Ada biaya pemakaian dalam USD sesuai batas ini. Angka dan saran tetap dihitung aplikasi; model tidak mengubah anggaran atau menghubungi prospek. Pengaturan default memakai aturan aplikasi tanpa penyedia eksternal.")
+    return _form_page(
+        request,
+        form,
+        "Pengaturan AI marketing",
+        "Persetujuan pemilik untuk pemrosesan agregat oleh penyedia model AI.",
+        "advisor",
+        "marketing:advisor",
+        note_title="Data yang dikirim ke penyedia AI",
+        note="Jika diaktifkan dan koneksi tersedia, OpenRouter menerima angka agregat marketing serta kode saran untuk mengurutkan prioritas. Nama prospek, identitas anggota, nama kampanye, dan pertanyaan Anda tetap lokal. Ada biaya pemakaian dalam USD sesuai batas ini. Angka dan saran tetap dihitung aplikasi; model tidak mengubah anggaran atau menghubungi prospek. Pengaturan default memakai aturan aplikasi tanpa penyedia eksternal.",
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -508,18 +1086,36 @@ def ai_policy(request):
 def ad_import(request):
     require_role(request, *WRITE)
     from .imports import import_ad_csv
-    form = AdImportForm(request.POST or None, request.FILES or None, organization=request.organization)
+
+    form = AdImportForm(
+        request.POST or None, request.FILES or None, organization=request.organization
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            result = import_ad_csv(organization=request.organization, actor=request.user,
-                                   campaign=form.cleaned_data["campaign"], content=form.cleaned_data["file"].read())
-            messages.success(request, f"Impor selesai: {result['created']} catatan baru, {result['duplicates']} catatan yang sudah ada.")
+            result = import_ad_csv(
+                organization=request.organization,
+                actor=request.user,
+                campaign=form.cleaned_data["campaign"],
+                content=form.cleaned_data["file"].read(),
+            )
+            messages.success(
+                request,
+                f"Impor selesai: {result['created']} catatan baru, {result['duplicates']} catatan yang sudah ada.",
+            )
             return redirect("marketing:campaigns")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Impor hasil iklan", "Unggah catatan harian satu kampanye menggunakan template CSV.", "campaigns", "marketing:campaigns",
-                      template_url=reverse("marketing:ad_template"), note_title="Satu sumber, satu catatan",
-                      note="Gunakan referensi unik dari laporan untuk mencegah pencatatan ganda. Biarkan angka kosong bila sumber belum tersedia. Jangan mencampurkan total harian dengan rincian iklan pada tanggal yang sama.")
+    return _form_page(
+        request,
+        form,
+        "Impor hasil iklan",
+        "Unggah catatan harian satu kampanye menggunakan template CSV.",
+        "campaigns",
+        "marketing:campaigns",
+        template_url=reverse("marketing:ad_template"),
+        note_title="Satu sumber, satu catatan",
+        note="Gunakan referensi unik dari laporan untuk mencegah pencatatan ganda. Biarkan angka kosong bila sumber belum tersedia. Jangan mencampurkan total harian dengan rincian iklan pada tanggal yang sama.",
+    )
 
 
 @require_GET
@@ -527,6 +1123,7 @@ def ad_import(request):
 def ad_template(request):
     require_role(request, *READ)
     from .imports import ad_csv_template
+
     response = HttpResponse(ad_csv_template(), content_type="text/csv; charset=utf-8")
     response["Content-Disposition"] = 'attachment; filename="template-hasil-iklan.csv"'
     return response

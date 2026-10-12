@@ -1,15 +1,20 @@
 from django.contrib.auth.views import LogoutView
 from django.urls import include, path
-from webapp import views
-from webapp import import_views
-from taxes import views as tax_views
+
 from config.health import readiness_response
+from taxes import views as tax_views
+from webapp import import_views, views
 
 urlpatterns = [
     path("", include("webapp.account_views")),
     path("", include("webapp.statement_views")),
     path("", include("webapp.operations_views")),
+    path("", include("webapp.fulfillment_views")),
+    path("", include("webapp.costing_views")),
+    path("", include("webapp.onboarding")),
     path("marketing/", include("marketing.urls")),
+    path("operations/", include("operations.urls")),
+    path("people/", include("people.urls")),
     path("director/", include("director.urls")),
     path("", views.dashboard, name="dashboard"),
     path("login/", views.FinanceLoginView.as_view(), name="login"),
@@ -55,7 +60,30 @@ urlpatterns = [
     path("health/", views.health, name="health"),
     path("ready/", readiness_response, name="readiness"),
     path("imports/", import_views.overview, name="imports_overview"),
+    path("imports/reviews/", include("imports.review_views")),
     path("imports/export/", import_views.export, name="imports_export"),
-    path("imports/sources/<int:pk>/", import_views.source_download, name="import_source"),
+    path(
+        "imports/sources/<int:pk>/", import_views.source_download, name="import_source"
+    ),
     path("imports/<str:period>/", import_views.month, name="imports_month"),
+]
+
+from webapp.supplier_advance_views import supplier_advance_urls
+
+urlpatterns += supplier_advance_urls
+urlpatterns += [
+    path("taxes/supplier-advances/", include("taxes.supplier_advance_review_urls"))
+]
+
+from webapp.opening_balance_views import opening_balance_urls
+
+urlpatterns += opening_balance_urls
+urlpatterns += [
+    path(
+        "taxes/opening-balances/settlements/",
+        include("taxes.opening_balance_review_urls"),
+    )
+]
+urlpatterns += [
+    path("taxes/opening-balances/refunds/", include("taxes.opening_refund_review_urls"))
 ]

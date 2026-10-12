@@ -5,36 +5,42 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0004_documented_tax_workflows'),
-        ('taxes', '0005_preserve_source_snapshots'),
+        ("core", "0004_documented_tax_workflows"),
+        ("taxes", "0005_preserve_source_snapshots"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='annualtaxfiling',
-            name='reported_balance_due',
-            field=models.DecimalField(blank=True, decimal_places=2, max_digits=18, null=True),
+            model_name="annualtaxfiling",
+            name="reported_balance_due",
+            field=models.DecimalField(
+                blank=True, decimal_places=2, max_digits=18, null=True
+            ),
         ),
         migrations.AddField(
-            model_name='annualtaxfiling',
-            name='reported_tax',
-            field=models.DecimalField(blank=True, decimal_places=2, max_digits=18, null=True),
+            model_name="annualtaxfiling",
+            name="reported_tax",
+            field=models.DecimalField(
+                blank=True, decimal_places=2, max_digits=18, null=True
+            ),
         ),
         migrations.AddField(
-            model_name='annualtaxfiling',
-            name='return_version',
+            model_name="annualtaxfiling",
+            name="return_version",
             field=models.PositiveSmallIntegerField(default=0),
         ),
         migrations.AddField(
-            model_name='annualtaxfiling',
-            name='year',
+            model_name="annualtaxfiling",
+            name="year",
             field=models.PositiveSmallIntegerField(blank=True, null=True),
         ),
         migrations.AddConstraint(
-            model_name='annualtaxfiling',
-            constraint=models.UniqueConstraint(fields=('organization', 'year', 'return_version'), name='tax_annual_receipt_version'),
+            model_name="annualtaxfiling",
+            constraint=models.UniqueConstraint(
+                fields=("organization", "year", "return_version"),
+                name="tax_annual_receipt_version",
+            ),
         ),
     ]

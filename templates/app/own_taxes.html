@@ -1,0 +1,13 @@
+{% load finance_format %}
+<section class="panel settings-section">
+  <div class="panel-heading"><div><h2>Pembayaran pajak perusahaan</h2><p>Utang berasal dari kertas kerja yang disetujui. Bukti pajak resmi tetap diperiksa di modul Pajak.</p></div></div>
+  {% for item in own_taxes %}
+  <article class="panel-body">
+    <h3>{% if item.obligation_id %}<a class="text-link" href="{% url 'taxes:obligation' item.obligation_id %}">Pajak final {{ item.obligation.period|date:'m/Y' }}</a>{% else %}<a class="text-link" href="{% url 'taxes:annual_workpaper' item.workpaper_id %}">PPh badan {{ item.corporate_year }}</a>{% endif %}</h3>
+    <dl class="compact-details"><div><dt>Tanggal jurnal</dt><dd>{{ item.date|iddate }}</dd></div><div><dt>Utang yang dicatat</dt><dd>{{ item.amount|money }}</dd></div><div><dt>Sisa pembayaran bank</dt><dd><strong>{{ item.remaining_amount|money }}</strong></dd></div></dl>
+    {% if can_write and item.remaining_amount > 0 %}<a class="button button-primary" href="{% url 'own_tax_payment' item.pk %}">Cocokkan transfer pajak</a>{% elif item.remaining_amount == 0 %}<p>Pembayaran bank lengkap. Bukti pajak resmi tetap perlu diperiksa.</p>{% endif %}
+    {% if item.instruction_evidence_id %}<details><summary>Instruksi profesional untuk jurnal tahun lama</summary><p>{{ item.professional_instruction }}</p><a class="text-link" href="{% url 'taxes:evidence_download' item.instruction_evidence_id %}">Buka PDF instruksi jurnal</a></details>{% endif %}
+  </article>
+  {% empty %}<div class="panel-body">Belum ada utang pajak perusahaan yang dicatat. Mulai dari kertas kerja yang disetujui di modul Pajak.</div>{% endfor %}
+  {% if tax_page.has_other_pages %}<nav class="form-actions" aria-label="Halaman pajak perusahaan"><span>Halaman {{ tax_page.number }} dari {{ tax_page.paginator.num_pages }}</span>{% if tax_page.has_previous %}<a href="?tax_page={{ tax_page.previous_page_number }}">Sebelumnya</a>{% endif %}{% if tax_page.has_next %}<a href="?tax_page={{ tax_page.next_page_number }}">Berikutnya</a>{% endif %}</nav>{% endif %}
+</section>

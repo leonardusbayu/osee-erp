@@ -12,6 +12,8 @@ from django.test import TestCase, override_settings
 
 from core.models import AuditEvent, Membership, Organization
 from finance.models import BankTransaction, Bill, Invoice, Journal, Party, PriceVersion
+from finance.services import create_bill
+
 from .models import ImportBatch, ImportException, MonthlySnapshot, SourceDocument
 from .services import import_bundle, import_summary, month_data
 
@@ -35,33 +37,96 @@ class SourceImportTests(TestCase):
         (self.root / "recap.pdf").write_bytes(source)
         self.bundle = {
             "schema_version": "1.0",
-            "sources": [{"id": "recap", "kind": "operating_recap", "relative_path": "recap.pdf",
-                         "original_filename": "synthetic recap.pdf", "sha256": hashlib.sha256(source).hexdigest(), "page_count": 2}],
-            "months": [{"id": "jan", "source_id": "recap", "source_period": "2026-01", "page": 1,
-                        "printed_count": 2, "printed_amount": 100, "detail_count": 3, "format_controls": [],
-                        "coverage": "source_page_only_completeness_unconfirmed", "locator": {"page": 1}}],
-            "channels": [{"id": "col-1", "month_id": "jan", "source_label": "RAW LABEL", "raw_header": "RAW LABEL",
-                          "header_price": None, "printed_count": 2, "printed_amount": None,
-                          "legacy_contributions": [], "locator": {"page": 1, "column_index": 1, "x0": 40.5}}],
-            "details": [{"id": "row-1", "month_id": "jan", "channel_id": "col-1", "original_date_text": "05-Jan-25",
-                         "parsed_source_date": "2025-01-05", "proposed_context_date": "2026-01-05", "quantity": 3,
-                         "year_conflict": True, "locator": {"page": 1, "row_index": 3, "column_index": 1}}],
-            "exceptions": [{"id": "year-1", "code": "date_year_conflict", "severity": "review_required", "status": "unresolved",
-                            "month_id": "jan", "channel_id": "col-1", "detail_ids": ["row-1"],
-                            "observed": {"raw_date": "05-Jan-25"}, "expected": {"context_year": 2026},
-                            "explanation": "Synthetic year conflict; original value retained."}],
-            "annual_summary": {"page": 2, "covered_periods": ["2026-01"], "missing_periods": [f"2026-{month:02d}" for month in range(2, 13)],
-                               "rows": [], "monthly_controls": [], "printed_total": 2, "coverage": "partial"},
+            "sources": [
+                {
+                    "id": "recap",
+                    "kind": "operating_recap",
+                    "relative_path": "recap.pdf",
+                    "original_filename": "synthetic recap.pdf",
+                    "sha256": hashlib.sha256(source).hexdigest(),
+                    "page_count": 2,
+                }
+            ],
+            "months": [
+                {
+                    "id": "jan",
+                    "source_id": "recap",
+                    "source_period": "2026-01",
+                    "page": 1,
+                    "printed_count": 2,
+                    "printed_amount": 100,
+                    "detail_count": 3,
+                    "format_controls": [],
+                    "coverage": "source_page_only_completeness_unconfirmed",
+                    "locator": {"page": 1},
+                }
+            ],
+            "channels": [
+                {
+                    "id": "col-1",
+                    "month_id": "jan",
+                    "source_label": "RAW LABEL",
+                    "raw_header": "RAW LABEL",
+                    "header_price": None,
+                    "printed_count": 2,
+                    "printed_amount": None,
+                    "legacy_contributions": [],
+                    "locator": {"page": 1, "column_index": 1, "x0": 40.5},
+                }
+            ],
+            "details": [
+                {
+                    "id": "row-1",
+                    "month_id": "jan",
+                    "channel_id": "col-1",
+                    "original_date_text": "05-Jan-25",
+                    "parsed_source_date": "2025-01-05",
+                    "proposed_context_date": "2026-01-05",
+                    "quantity": 3,
+                    "year_conflict": True,
+                    "locator": {"page": 1, "row_index": 3, "column_index": 1},
+                }
+            ],
+            "exceptions": [
+                {
+                    "id": "year-1",
+                    "code": "date_year_conflict",
+                    "severity": "review_required",
+                    "status": "unresolved",
+                    "month_id": "jan",
+                    "channel_id": "col-1",
+                    "detail_ids": ["row-1"],
+                    "observed": {"raw_date": "05-Jan-25"},
+                    "expected": {"context_year": 2026},
+                    "explanation": "Synthetic year conflict; original value retained.",
+                }
+            ],
+            "annual_summary": {
+                "page": 2,
+                "covered_periods": ["2026-01"],
+                "missing_periods": [f"2026-{month:02d}" for month in range(2, 13)],
+                "rows": [],
+                "monthly_controls": [],
+                "printed_total": 2,
+                "coverage": "partial",
+            },
             "supplier_invoice": None,
         }
 
     def write_bundle(self, bundle=None):
         path = self.root / "bundle.json"
-        path.write_text(json.dumps(self.bundle if bundle is None else bundle), encoding="utf-8")
+        path.write_text(
+            json.dumps(self.bundle if bundle is None else bundle), encoding="utf-8"
+        )
         return path
 
     def run_import(self, bundle=None, **kwargs):
-        return import_bundle(organization=self.org, actor=self.owner, bundle_path=self.write_bundle(bundle), **kwargs)
+        return import_bundle(
+            organization=self.org,
+            actor=self.owner,
+            bundle_path=self.write_bundle(bundle),
+            **kwargs,
+        )
 
     def stored_files(self):
         return [path for path in self.storage.rglob("*") if path.is_file()]
@@ -69,13 +134,34 @@ class SourceImportTests(TestCase):
     def add_supplier(self):
         data = b"%PDF-1.7\nSynthetic supplier only\n%%EOF"
         (self.root / "supplier.pdf").write_bytes(data)
-        self.bundle["sources"].append({"id": "supplier", "kind": "supplier_invoice", "relative_path": "supplier.pdf",
-                                       "original_filename": "synthetic supplier.pdf", "sha256": hashlib.sha256(data).hexdigest(), "page_count": 1})
-        self.bundle["supplier_invoice"] = {"source_id": "supplier", "facts": {
-            "invoice_number": "SYNTHETIC-1", "supplier_name": "Synthetic provider", "invoice_date": "2026-05-04",
-            "service_date": "2026-05-02", "quantity": 1, "unit_price": 100, "base_amount": 100,
-            "vat_amount": 11, "total_amount": 111, "currency": "IDR", "payment_status": "unconfirmed",
-        }, "approval_status": "source_evidence_only", "candidate_match": {}}
+        self.bundle["sources"].append(
+            {
+                "id": "supplier",
+                "kind": "supplier_invoice",
+                "relative_path": "supplier.pdf",
+                "original_filename": "synthetic supplier.pdf",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "page_count": 1,
+            }
+        )
+        self.bundle["supplier_invoice"] = {
+            "source_id": "supplier",
+            "facts": {
+                "invoice_number": "SYNTHETIC-1",
+                "supplier_name": "Synthetic provider",
+                "invoice_date": "2026-05-04",
+                "service_date": "2026-05-02",
+                "quantity": 1,
+                "unit_price": 100,
+                "base_amount": 100,
+                "vat_amount": 11,
+                "total_amount": 111,
+                "currency": "IDR",
+                "payment_status": "unconfirmed",
+            },
+            "approval_status": "source_evidence_only",
+            "candidate_match": {},
+        }
 
     def test_source_archive_preserves_nulls_dates_and_exceptions_without_posting(self):
         batch = self.run_import()
@@ -87,7 +173,9 @@ class SourceImportTests(TestCase):
         self.assertEqual(detail["details"][0]["proposed_context_date"], "2026-01-05")
         self.assertEqual(detail["details"][0]["original_date_text"], "05-Jan-25")
         exception = detail["exceptions"].get()
-        self.assertEqual((exception.code, exception.status), ("date_year_conflict", "open"))
+        self.assertEqual(
+            (exception.code, exception.status), ("date_year_conflict", "open")
+        )
         self.assertEqual(exception.payload["status"], "unresolved")
         for model in (Invoice, Bill, BankTransaction, Journal, PriceVersion, Party):
             self.assertFalse(model.objects.exists(), model.__name__)
@@ -104,9 +192,14 @@ class SourceImportTests(TestCase):
         self.assertEqual(ImportBatch.objects.count(), 1)
         self.assertEqual(MonthlySnapshot.objects.get().printed_amount, 100)
         self.assertEqual(len(self.stored_files()), 1)
-        self.assertEqual(AuditEvent.objects.filter(action="imports.source_bundle.imported").count(), 1)
+        self.assertEqual(
+            AuditEvent.objects.filter(action="imports.source_bundle.imported").count(),
+            1,
+        )
 
-    def test_summary_distinguishes_printed_controls_from_detail_and_missing_months(self):
+    def test_summary_distinguishes_printed_controls_from_detail_and_missing_months(
+        self,
+    ):
         self.run_import()
         summary = import_summary(organization=self.org)
         self.assertEqual(summary["reported_amount"], 100)
@@ -122,25 +215,45 @@ class SourceImportTests(TestCase):
     def test_import_scope_is_required_and_read_helpers_cannot_cross_organizations(self):
         self.run_import()
         with self.assertRaises(PermissionDenied):
-            import_bundle(organization=self.other, actor=self.owner, bundle_path=self.write_bundle())
+            import_bundle(
+                organization=self.other,
+                actor=self.owner,
+                bundle_path=self.write_bundle(),
+            )
         with self.assertRaises(ValidationError):
             month_data(organization=self.other, source_period="2026-01")
         self.assertEqual(import_summary(organization=self.other)["covered_months"], [])
-        other_batch = import_bundle(organization=self.other, bundle_path=self.write_bundle())
+        other_batch = import_bundle(
+            organization=self.other, bundle_path=self.write_bundle()
+        )
         self.assertEqual(other_batch.organization_id, self.other.pk)
         self.assertEqual(self.org.import_batches.count(), 1)
-        self.assertEqual(import_summary(organization=self.other)["reported_amount"], 100)
+        self.assertEqual(
+            import_summary(organization=self.other)["reported_amount"], 100
+        )
         source = SourceDocument.objects.filter(batch=other_batch).get()
         self.assertTrue(source.file.name.startswith(f"organizations/{self.other.pk}/"))
 
     def test_invalid_types_references_and_source_files_are_rejected_atomically(self):
         cases = []
-        altered = deepcopy(self.bundle); altered["details"][0]["quantity"] = True; cases.append(altered)
-        altered = deepcopy(self.bundle); altered["channels"][0]["header_price"] = 1.5; cases.append(altered)
-        altered = deepcopy(self.bundle); altered["details"][0]["channel_id"] = "missing"; cases.append(altered)
-        altered = deepcopy(self.bundle); altered["sources"][0]["sha256"] = "0" * 64; cases.append(altered)
-        altered = deepcopy(self.bundle); altered["sources"][0]["relative_path"] = "../outside.pdf"; cases.append(altered)
-        altered = deepcopy(self.bundle); altered["months"].append(deepcopy(altered["months"][0])); cases.append(altered)
+        altered = deepcopy(self.bundle)
+        altered["details"][0]["quantity"] = True
+        cases.append(altered)
+        altered = deepcopy(self.bundle)
+        altered["channels"][0]["header_price"] = 1.5
+        cases.append(altered)
+        altered = deepcopy(self.bundle)
+        altered["details"][0]["channel_id"] = "missing"
+        cases.append(altered)
+        altered = deepcopy(self.bundle)
+        altered["sources"][0]["sha256"] = "0" * 64
+        cases.append(altered)
+        altered = deepcopy(self.bundle)
+        altered["sources"][0]["relative_path"] = "../outside.pdf"
+        cases.append(altered)
+        altered = deepcopy(self.bundle)
+        altered["months"].append(deepcopy(altered["months"][0]))
+        cases.append(altered)
         for bundle in cases:
             with self.subTest(bundle=bundle), self.assertRaises(ValidationError):
                 self.run_import(bundle)
@@ -151,9 +264,12 @@ class SourceImportTests(TestCase):
         self.add_supplier()
         batch = self.run_import()
         bill = batch.supplier_bill
-        self.assertEqual(bill.number, "SYNTHETIC-1")
+        self.assertTrue(bill.number.startswith("BILL-"))
+        self.assertEqual(bill.supplier_reference, "SYNTHETIC-1")
         self.assertEqual((bill.amount, bill.supplier_vat), (111, 11))
-        self.assertEqual((bill.status, bill.tax_status, bill.tax_amount), ("draft", "review", None))
+        self.assertEqual(
+            (bill.status, bill.tax_status, bill.tax_amount), ("draft", "review", None)
+        )
         self.assertEqual(bill.service_date.isoformat(), "2026-05-02")
         self.assertFalse(Journal.objects.exists())
         self.assertFalse(Invoice.objects.exists())
@@ -161,12 +277,126 @@ class SourceImportTests(TestCase):
         self.assertEqual(self.run_import().supplier_bill_id, bill.pk)
         self.assertEqual(Bill.objects.count(), 1)
 
+    def test_manual_supplier_bill_and_import_share_normalized_original_identity(self):
+        self.add_supplier()
+        supplier = Party.objects.create(
+            organization=self.org, kind="supplier", name="SYNTHETIC   PROVIDER"
+        )
+        existing = create_bill(
+            organization=self.org,
+            actor=self.owner,
+            supplier=supplier,
+            supplier_reference="  Synthetic-1  ",
+            amount="111",
+            supplier_vat="11",
+            date="2026-05-04",
+            service_date="2026-05-02",
+            category="provider",
+        )
+        imported = self.run_import()
+        self.assertEqual(imported.supplier_bill_id, existing.pk)
+        self.assertEqual(Bill.objects.count(), 1)
+        self.assertFalse(Journal.objects.exists())
+
+    def test_conflicting_supplier_facts_hold_import_without_duplicate_bill(self):
+        self.add_supplier()
+        supplier = Party.objects.create(
+            organization=self.org, kind="supplier", name="Synthetic provider"
+        )
+        create_bill(
+            organization=self.org,
+            actor=self.owner,
+            supplier=supplier,
+            supplier_reference="SYNTHETIC-1",
+            amount="112",
+            supplier_vat="11",
+            date="2026-05-04",
+            service_date="2026-05-02",
+            category="provider",
+        )
+        with self.assertRaisesMessage(ValidationError, "berbeda"):
+            self.run_import()
+        self.assertEqual(Bill.objects.count(), 1)
+        self.assertFalse(ImportBatch.objects.exists())
+        self.assertFalse(Journal.objects.exists())
+
+    def test_legacy_original_number_reused_without_overwriting(self):
+        self.add_supplier()
+        supplier = Party.objects.create(
+            organization=self.org, kind="supplier", name="Synthetic provider"
+        )
+        legacy = create_bill(
+            organization=self.org,
+            actor=self.owner,
+            supplier=supplier,
+            number="synthetic-1",
+            amount="111",
+            supplier_vat="11",
+            date="2026-05-04",
+            service_date="2026-05-02",
+            category="provider",
+        )
+        imported = self.run_import()
+        self.assertEqual(imported.supplier_bill_id, legacy.pk)
+        legacy.refresh_from_db()
+        self.assertEqual(
+            (legacy.number, legacy.supplier_reference), ("synthetic-1", "")
+        )
+        event = AuditEvent.objects.get(action="imports.supplier_identity.matched")
+        self.assertEqual(
+            event.detail["identity_basis"], "legacy_original_number_verified"
+        )
+
+    def test_ambiguous_legacy_supplier_document_is_held_without_merge_or_delete(self):
+        self.add_supplier()
+        supplier = Party.objects.create(
+            organization=self.org, kind="supplier", name="Synthetic provider"
+        )
+        for number in ("synthetic-1", "SYNTHETIC-1"):
+            create_bill(
+                organization=self.org,
+                actor=self.owner,
+                supplier=supplier,
+                number=number,
+                amount="111",
+                supplier_vat="11",
+                date="2026-05-04",
+                service_date="2026-05-02",
+                category="provider",
+            )
+        with self.assertRaisesMessage(ValidationError, "beberapa tagihan"):
+            self.run_import()
+        self.assertEqual(Bill.objects.count(), 2)
+        self.assertFalse(ImportBatch.objects.exists())
+        self.assertFalse(Journal.objects.exists())
+
+    def test_inactive_import_actor_cannot_create_source_or_supplier_bill(self):
+        self.add_supplier()
+        self.owner.is_active = False
+        self.owner.save()
+        with self.assertRaises(PermissionDenied):
+            self.run_import()
+        self.assertFalse(Bill.objects.exists())
+        self.assertFalse(ImportBatch.objects.exists())
+
     def test_database_failure_removes_new_copies_and_rolls_back_draft_bill(self):
         self.add_supplier()
-        with patch("imports.services.record", side_effect=IntegrityError("synthetic commit failure")):
-            with self.assertRaises(IntegrityError):
-                self.run_import()
-        for model in (ImportBatch, SourceDocument, MonthlySnapshot, ImportException, Bill, Party):
+        with (
+            patch(
+                "imports.services.record",
+                side_effect=IntegrityError("synthetic commit failure"),
+            ),
+            self.assertRaises(IntegrityError),
+        ):
+            self.run_import()
+        for model in (
+            ImportBatch,
+            SourceDocument,
+            MonthlySnapshot,
+            ImportException,
+            Bill,
+            Party,
+        ):
             self.assertFalse(model.objects.exists(), model.__name__)
         self.assertEqual(self.stored_files(), [])
 
@@ -179,7 +409,9 @@ class SourceImportTests(TestCase):
             batch.delete()
         modified_source = b"%PDF-1.7\nA different recap for the same period\n%%EOF"
         (self.root / "recap.pdf").write_bytes(modified_source)
-        self.bundle["sources"][0]["sha256"] = hashlib.sha256(modified_source).hexdigest()
+        self.bundle["sources"][0]["sha256"] = hashlib.sha256(
+            modified_source
+        ).hexdigest()
         with self.assertRaisesMessage(ValidationError, "tumpang tindih"):
             self.run_import()
         self.assertEqual(ImportBatch.objects.count(), 1)
@@ -187,12 +419,22 @@ class SourceImportTests(TestCase):
 
     def test_merged_date_cell_remains_ambiguous_without_an_assigned_service_date(self):
         row = self.bundle["details"][0]
-        row.update({"original_date_text": "05-Jan-26 / 06-Jan-26", "parsed_source_date": None,
-                    "proposed_context_date": None, "year_conflict": False, "merged_date_cell": True,
-                    "date_ambiguous": True, "source_date_candidates": ["05-Jan-26", "06-Jan-26"],
-                    "date_status": "merged_date_cell_unresolved"})
+        row.update(
+            {
+                "original_date_text": "05-Jan-26 / 06-Jan-26",
+                "parsed_source_date": None,
+                "proposed_context_date": None,
+                "year_conflict": False,
+                "merged_date_cell": True,
+                "date_ambiguous": True,
+                "source_date_candidates": ["05-Jan-26", "06-Jan-26"],
+                "date_status": "merged_date_cell_unresolved",
+            }
+        )
         self.run_import()
-        imported = month_data(organization=self.org, source_period="2026-01")["details"][0]
+        imported = month_data(organization=self.org, source_period="2026-01")[
+            "details"
+        ][0]
         self.assertEqual(imported["source_date_candidates"], ["05-Jan-26", "06-Jan-26"])
         self.assertIsNone(imported["parsed_source_date"])
         self.assertIsNone(imported["proposed_context_date"])
@@ -200,11 +442,18 @@ class SourceImportTests(TestCase):
 
     def test_summary_unknown_values_remain_null_instead_of_becoming_zero(self):
         month = self.bundle["months"][0]
-        month.update({"printed_amount": None, "printed_count": None, "detail_count": None})
+        month.update(
+            {"printed_amount": None, "printed_count": None, "detail_count": None}
+        )
         self.bundle["annual_summary"]["printed_total"] = None
         self.run_import()
         summary = import_summary(organization=self.org)
-        for field in ("reported_amount", "printed_count", "detail_count", "annual_printed_count"):
+        for field in (
+            "reported_amount",
+            "printed_count",
+            "detail_count",
+            "annual_printed_count",
+        ):
             self.assertIsNone(summary[field], field)
         empty = import_summary(organization=self.other)
         self.assertIsNone(empty["reported_amount"])

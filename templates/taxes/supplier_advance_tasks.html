@@ -1,0 +1,12 @@
+{% load finance_format %}
+{% if supplier_advance_tax_candidates %}
+<section class="panel">
+  <div class="panel-heading"><div><h2>Pembayaran pemasok yang perlu diperiksa</h2><p>Pembayaran sebelum tagihan tetap perlu diperiksa, termasuk jika uangnya sudah dipakai atau dikembalikan.</p></div></div>
+  <div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Pembayaran asli</th><th>Yang perlu dilakukan</th><th></th></tr></thead>
+    <tbody>{% for item in supplier_advance_tax_candidates %}
+      <tr><td>Uang muka #{{ item.advance_id }}<small class="cell-sub">{{ item.date|iddate }}</small></td><td>{{ item.reason }}</td><td><a class="text-link" href="{% url 'supplier_advance_tax:review' item.advance_id %}">Periksa dokumen pajak</a></td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}

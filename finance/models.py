@@ -1,7 +1,7 @@
 """Organization-scoped finance records. Posting is owned by finance.services."""
 
-from decimal import Decimal
 import unicodedata
+from decimal import Decimal
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -9,26 +9,44 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-
 ZERO = Decimal("0.00")
 
 
 def normalize_supplier_reference(value):
     """Retain punctuation; normalize case, Unicode width and whitespace only."""
-    if not isinstance(value, str) or len(value) > 160 or any(unicodedata.category(c).startswith("C") for c in value):
-        raise ValidationError({"supplier_reference": "Nomor dokumen pemasok maksimal 160 karakter tanpa karakter kontrol."})
+    if (
+        not isinstance(value, str)
+        or len(value) > 160
+        or any(unicodedata.category(c).startswith("C") for c in value)
+    ):
+        raise ValidationError(
+            {
+                "supplier_reference": "Nomor dokumen pemasok maksimal 160 karakter tanpa karakter kontrol."
+            }
+        )
     normalized = " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
     if len(normalized) > 480:
-        raise ValidationError({"supplier_reference": "Nomor dokumen pemasok terlalu panjang setelah normalisasi (maksimal 480 karakter). Periksa nomor pada dokumen asli."})
+        raise ValidationError(
+            {
+                "supplier_reference": "Nomor dokumen pemasok terlalu panjang setelah normalisasi (maksimal 480 karakter). Periksa nomor pada dokumen asli."
+            }
+        )
     return normalized
 
 
 def assert_open_period(organization_id, posting_date):
     """A closed month also freezes every earlier posting feeding its balances."""
-    if AccountingPeriod.objects.filter(organization_id=organization_id, closed=True).filter(
-        Q(year__gt=posting_date.year) | Q(year=posting_date.year, month__gte=posting_date.month)
-    ).exists():
-        raise ValidationError("Tanggal berada dalam atau sebelum periode akuntansi yang sudah dikunci.")
+    if (
+        AccountingPeriod.objects.filter(organization_id=organization_id, closed=True)
+        .filter(
+            Q(year__gt=posting_date.year)
+            | Q(year=posting_date.year, month__gte=posting_date.month)
+        )
+        .exists()
+    ):
+        raise ValidationError(
+            "Tanggal berada dalam atau sebelum periode akuntansi yang sudah dikunci."
+        )
 
 
 class ValidatedQuerySet(models.QuerySet):
@@ -63,13 +81,20 @@ class ScopedModel(models.Model):
                 try:
                     linked = getattr(self, field)
                 except ObjectDoesNotExist as exc:
-                    raise ValidationError({field: "Catatan terkait tidak ditemukan."}) from exc
+                    raise ValidationError(
+                        {field: "Catatan terkait tidak ditemukan."}
+                    ) from exc
                 if linked.organization_id != self.organization_id:
-                    raise ValidationError({field: "Catatan berasal dari organisasi lain."})
+                    raise ValidationError(
+                        {field: "Catatan berasal dari organisasi lain."}
+                    )
         if self.pk:
-            old_org = type(self).objects.filter(pk=self.pk).values_list(
-                "organization_id", flat=True
-            ).first()
+            old_org = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values_list("organization_id", flat=True)
+                .first()
+            )
             if old_org is not None and old_org != self.organization_id:
                 raise ValidationError("Organisasi catatan tidak boleh diganti.")
 
@@ -86,7 +111,12 @@ class ScopedModel(models.Model):
                 return super().save(*args, **kwargs)
             finally:
                 # Privileges belong to one controlled save, never to returned objects.
-                for flag in ("_service_transition", "_allow_price_end_change", "_tax_service_transition", "_opening_service_transition"):
+                for flag in (
+                    "_service_transition",
+                    "_allow_price_end_change",
+                    "_tax_service_transition",
+                    "_opening_service_transition",
+                ):
                     self.__dict__.pop(flag, None)
 
     def _old(self):
@@ -98,10 +128,14 @@ class ScopedModel(models.Model):
 
     def _delete_current_draft(self, *args, **kwargs):
         from core.models import Organization
+
         with transaction.atomic():
             Organization.objects.select_for_update().get(pk=self.organization_id)
             current = type(self).objects.select_for_update().get(pk=self.pk)
-            if current.organization_id != self.organization_id or current.status != "draft":
+            if (
+                current.organization_id != self.organization_id
+                or current.status != "draft"
+            ):
                 raise ValidationError("Dokumen terposting tidak boleh dihapus.")
             assert_open_period(self.organization_id, current.date)
             return super().delete(*args, **kwargs)
@@ -133,10 +167,16 @@ class Product(ScopedModel):
     code = models.CharField(max_length=60)
     name = models.CharField(max_length=200)
     kind = models.CharField(max_length=20, choices=Kind.choices)
-    default_price = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(ZERO)])
+    default_price = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(ZERO)]
+    )
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "code"], name="finance_product_org_code")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "code"], name="finance_product_org_code"
+            )
+        ]
         ordering = ["code"]
 
     def __str__(self):
@@ -151,40 +191,68 @@ class PriceVersion(ScopedModel):
     party = models.ForeignKey(Party, null=True, blank=True, on_delete=models.PROTECT)
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     kind = models.CharField(max_length=20, choices=Kind.choices)
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     effective_from = models.DateField()
     effective_to = models.DateField(null=True, blank=True)
     scoped_references = ("party", "product")
 
     class Meta:
         ordering = ["-effective_from", "-pk"]
-        constraints = [models.CheckConstraint(condition=Q(effective_to__isnull=True) | Q(effective_to__gte=models.F("effective_from")), name="finance_price_dates")]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(effective_to__isnull=True)
+                | Q(effective_to__gte=models.F("effective_from")),
+                name="finance_price_dates",
+            )
+        ]
 
     def clean(self):
         super().clean()
         old = self._old()
-        self._unchanged(old, ("party_id", "product_id", "kind", "amount", "effective_from"))
+        self._unchanged(
+            old, ("party_id", "product_id", "kind", "amount", "effective_from")
+        )
         if not getattr(self, "_allow_price_end_change", False):
             self._unchanged(old, ("effective_to",))
-        elif old and (not self.effective_to or self.effective_to < self.effective_from or (old.effective_to and self.effective_to > old.effective_to)):
-            raise ValidationError("Penggantian harga hanya boleh memperpendek masa berlaku lama.")
+        elif old and (
+            not self.effective_to
+            or self.effective_to < self.effective_from
+            or (old.effective_to and self.effective_to > old.effective_to)
+        ):
+            raise ValidationError(
+                "Penggantian harga hanya boleh memperpendek masa berlaku lama."
+            )
         if self.party_id:
             supplier = self.party.kind == Party.Kind.SUPPLIER
             if (self.kind == self.Kind.SUPPLIER) != supplier:
                 raise ValidationError("Jenis mitra tidak sesuai dengan jenis harga.")
         if self.effective_from and self.product_id:
-            overlaps = type(self).objects.filter(
-                organization_id=self.organization_id, product_id=self.product_id,
-                party_id=self.party_id, kind=self.kind,
-            ).exclude(pk=self.pk)
+            overlaps = (
+                type(self)
+                .objects.filter(
+                    organization_id=self.organization_id,
+                    product_id=self.product_id,
+                    party_id=self.party_id,
+                    kind=self.kind,
+                )
+                .exclude(pk=self.pk)
+            )
             if self.effective_to:
                 overlaps = overlaps.filter(effective_from__lte=self.effective_to)
-            overlaps = overlaps.filter(Q(effective_to__isnull=True) | Q(effective_to__gte=self.effective_from))
+            overlaps = overlaps.filter(
+                Q(effective_to__isnull=True) | Q(effective_to__gte=self.effective_from)
+            )
             if overlaps.exists():
-                raise ValidationError("Periode harga bertumpang tindih. Tanggal akhir bersifat inklusif.")
+                raise ValidationError(
+                    "Periode harga bertumpang tindih. Tanggal akhir bersifat inklusif."
+                )
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Versi harga disimpan sebagai riwayat dan tidak boleh dihapus.")
+        raise ValidationError(
+            "Versi harga disimpan sebagai riwayat dan tidak boleh dihapus."
+        )
 
 
 class Invoice(ScopedModel):
@@ -198,41 +266,118 @@ class Invoice(ScopedModel):
     party = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="invoices")
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)])
-    unit_price = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
-    price_version = models.ForeignKey(PriceVersion, null=True, blank=True, on_delete=models.PROTECT)
+    unit_price = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
+    price_version = models.ForeignKey(
+        PriceVersion, null=True, blank=True, on_delete=models.PROTECT
+    )
     date = models.DateField()
     due_date = models.DateField()
     service_date = models.DateField()
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    cost_estimate = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(ZERO)])
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.DRAFT
+    )
+    cost_estimate = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(ZERO)],
+    )
     delivered_at = models.DateField(null=True, blank=True)
     delivery_evidence = models.TextField(max_length=4000, blank=True)
     scoped_references = ("party", "product", "price_version")
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "number"], name="finance_invoice_org_number")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "number"], name="finance_invoice_org_number"
+            )
+        ]
         ordering = ["-date", "-pk"]
 
     def clean(self):
         super().clean()
         if self.party_id and self.party.kind == Party.Kind.SUPPLIER:
-            raise ValidationError({"party": "Tagihan penjualan memerlukan pelanggan atau reseller."})
+            raise ValidationError(
+                {"party": "Tagihan penjualan memerlukan pelanggan atau reseller."}
+            )
         if self.due_date and self.date and self.due_date < self.date:
-            raise ValidationError({"due_date": "Jatuh tempo tidak boleh sebelum tanggal tagihan."})
-        if self.price_version_id and (self.price_version.product_id != self.product_id or self.price_version.kind != PriceVersion.Kind.SELLING or self.price_version.party_id not in (None, self.party_id)):
-            raise ValidationError({"price_version": "Versi harga tidak sesuai dengan produk/pelanggan."})
+            raise ValidationError(
+                {"due_date": "Jatuh tempo tidak boleh sebelum tanggal tagihan."}
+            )
+        if self.price_version_id and (
+            self.price_version.product_id != self.product_id
+            or self.price_version.kind != PriceVersion.Kind.SELLING
+            or self.price_version.party_id not in (None, self.party_id)
+        ):
+            raise ValidationError(
+                {"price_version": "Versi harga tidak sesuai dengan produk/pelanggan."}
+            )
         old = self._old()
         if old and old.status != self.Status.DRAFT:
-            self._unchanged(old, ("number", "party_id", "product_id", "quantity", "unit_price", "price_version_id", "date", "due_date", "service_date", "cost_estimate"))
-        if old and old.delivered_at != self.delivered_at and (old.status == self.Status.DELIVERED or not getattr(self, "_service_transition", False)):
-            raise ValidationError("Tanggal penyelesaian aktual tidak boleh diubah setelah dicatat.")
-        if old and old.delivery_evidence != self.delivery_evidence and (old.status == self.Status.DELIVERED or not getattr(self, "_service_transition", False)):
-            raise ValidationError("Bukti penyelesaian tidak boleh diubah setelah dicatat.")
-        if self.status != self.Status.DELIVERED and (self.delivered_at or self.delivery_evidence):
-            raise ValidationError("Tanggal dan bukti penyelesaian hanya dicatat bersama pengakuan layanan selesai.")
-        if ((not old and self.status != self.Status.DRAFT) or (old and old.status != self.status)) and not getattr(self, "_service_transition", False):
-            raise ValidationError("Gunakan layanan keuangan untuk menerbitkan/menyelesaikan tagihan.")
-        if old and old.status != self.status and (old.status, self.status) not in {("draft", "issued"), ("issued", "delivered"), ("draft", "cancelled"), ("issued", "cancelled")}:
+            self._unchanged(
+                old,
+                (
+                    "number",
+                    "party_id",
+                    "product_id",
+                    "quantity",
+                    "unit_price",
+                    "price_version_id",
+                    "date",
+                    "due_date",
+                    "service_date",
+                    "cost_estimate",
+                ),
+            )
+        if (
+            old
+            and old.delivered_at != self.delivered_at
+            and (
+                old.status == self.Status.DELIVERED
+                or not getattr(self, "_service_transition", False)
+            )
+        ):
+            raise ValidationError(
+                "Tanggal penyelesaian aktual tidak boleh diubah setelah dicatat."
+            )
+        if (
+            old
+            and old.delivery_evidence != self.delivery_evidence
+            and (
+                old.status == self.Status.DELIVERED
+                or not getattr(self, "_service_transition", False)
+            )
+        ):
+            raise ValidationError(
+                "Bukti penyelesaian tidak boleh diubah setelah dicatat."
+            )
+        if self.status != self.Status.DELIVERED and (
+            self.delivered_at or self.delivery_evidence
+        ):
+            raise ValidationError(
+                "Tanggal dan bukti penyelesaian hanya dicatat bersama pengakuan layanan selesai."
+            )
+        if (
+            (not old and self.status != self.Status.DRAFT)
+            or (old and old.status != self.status)
+        ) and not getattr(self, "_service_transition", False):
+            raise ValidationError(
+                "Gunakan layanan keuangan untuk menerbitkan/menyelesaikan tagihan."
+            )
+        if (
+            old
+            and old.status != self.status
+            and (old.status, self.status)
+            not in {
+                ("draft", "issued"),
+                ("issued", "delivered"),
+                ("draft", "cancelled"),
+                ("issued", "cancelled"),
+            }
+        ):
             raise ValidationError("Perubahan status invoice tidak diizinkan.")
         if self.status == "delivered" and not self.delivered_at:
             raise ValidationError("Tanggal penyelesaian wajib untuk layanan selesai.")
@@ -244,14 +389,20 @@ class Invoice(ScopedModel):
     @property
     def paid_amount(self):
         receipts = self.allocations.aggregate(amount=Sum("amount"))["amount"] or ZERO
-        advances = self.advance_applications.aggregate(amount=Sum("amount"))["amount"] or ZERO
-        return receipts + advances
+        advances = (
+            self.advance_applications.aggregate(amount=Sum("amount"))["amount"] or ZERO
+        )
+        withheld_receipts = (
+            self.tax_settlements.aggregate(amount=Sum("gross_amount"))["amount"] or ZERO
+        )
+        return receipts + advances + withheld_receipts
 
     @property
     def outstanding_amount(self):
         if self.status == "cancelled":
             return ZERO
-        return self.total - self.paid_amount
+        credits = self.unit_credits.aggregate(value=Sum("amount"))["value"] or ZERO
+        return max(ZERO, self.total - credits - self.paid_amount)
 
     def delete(self, *args, **kwargs):
         return self._delete_current_draft(*args, **kwargs)
@@ -263,45 +414,135 @@ class Invoice(ScopedModel):
 class Bill(ScopedModel):
     number = models.CharField(max_length=80)
     supplier_reference = models.CharField(max_length=160, blank=True)
-    supplier_reference_key = models.CharField(max_length=480, blank=True, editable=False)
+    supplier_reference_key = models.CharField(
+        max_length=480, blank=True, editable=False
+    )
     submission_key = models.UUIDField(null=True, blank=True, editable=False)
     supplier = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="bills")
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
-    supplier_vat = models.DecimalField(max_digits=20, decimal_places=2, default=ZERO, validators=[MinValueValidator(ZERO)])
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
+    supplier_vat = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=ZERO,
+        validators=[MinValueValidator(ZERO)],
+    )
     date = models.DateField()
     service_date = models.DateField()
-    category = models.CharField(max_length=20, choices=[("expense", "Beban"), ("prepayment", "Biaya dibayar di muka"), ("provider", "Biaya penyedia tes")], default="expense")
-    status = models.CharField(max_length=20, choices=[("draft", "Draf"), ("approved", "Disahkan")], default="draft")
-    tax_status = models.CharField(max_length=20, choices=[("review", "Perlu tinjauan"), ("pending", "Menunggu bukti"), ("reviewed", "Ditinjau")], default="review")
-    tax_amount = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(ZERO)])
+    category = models.CharField(
+        max_length=20,
+        choices=[
+            ("expense", "Beban"),
+            ("prepayment", "Biaya dibayar di muka"),
+            ("provider", "Biaya penyedia tes"),
+        ],
+        default="expense",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=[("draft", "Draf"), ("approved", "Disahkan")],
+        default="draft",
+    )
+    tax_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("review", "Perlu tinjauan"),
+            ("pending", "Menunggu bukti"),
+            ("reviewed", "Ditinjau"),
+        ],
+        default="review",
+    )
+    tax_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(ZERO)],
+    )
     scoped_references = ("supplier",)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "supplier", "number"], name="finance_bill_supplier_number"),
-            models.UniqueConstraint(fields=["organization", "supplier", "supplier_reference_key"], condition=~Q(supplier_reference_key=""), name="finance_bill_supplier_source"),
-            models.UniqueConstraint(fields=["organization", "submission_key"], condition=Q(submission_key__isnull=False), name="finance_bill_submission")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "supplier", "number"],
+                name="finance_bill_supplier_number",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "supplier", "supplier_reference_key"],
+                condition=~Q(supplier_reference_key=""),
+                name="finance_bill_supplier_source",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "submission_key"],
+                condition=Q(submission_key__isnull=False),
+                name="finance_bill_submission",
+            ),
+        ]
         ordering = ["-date", "-pk"]
 
     def clean(self):
         super().clean()
-        self.supplier_reference_key = normalize_supplier_reference(self.supplier_reference)
+        self.supplier_reference_key = normalize_supplier_reference(
+            self.supplier_reference
+        )
         if self.supplier_id and self.supplier.kind != Party.Kind.SUPPLIER:
-            raise ValidationError({"supplier": "Pilih pemasok untuk tagihan pembelian."})
-        if self.amount is not None and self.supplier_vat is not None and self.supplier_vat > self.amount:
-            raise ValidationError({"supplier_vat": "PPN pemasok adalah bagian dari jumlah bruto, bukan tambahan."})
+            raise ValidationError(
+                {"supplier": "Pilih pemasok untuk tagihan pembelian."}
+            )
+        if (
+            self.amount is not None
+            and self.supplier_vat is not None
+            and self.supplier_vat > self.amount
+        ):
+            raise ValidationError(
+                {
+                    "supplier_vat": "PPN pemasok adalah bagian dari jumlah bruto, bukan tambahan."
+                }
+            )
         old = self._old()
-        self._unchanged(old, ("supplier_reference", "supplier_reference_key", "submission_key"))
+        self._unchanged(
+            old, ("supplier_reference", "supplier_reference_key", "submission_key")
+        )
         if old and old.status == "approved":
-            self._unchanged(old, ("number", "supplier_id", "amount", "supplier_vat", "date", "service_date", "category"))
-        if ((not old and self.status != "draft") or (old and old.status != self.status)) and not getattr(self, "_service_transition", False):
+            self._unchanged(
+                old,
+                (
+                    "number",
+                    "supplier_id",
+                    "amount",
+                    "supplier_vat",
+                    "date",
+                    "service_date",
+                    "category",
+                ),
+            )
+        if (
+            (not old and self.status != "draft") or (old and old.status != self.status)
+        ) and not getattr(self, "_service_transition", False):
             raise ValidationError("Gunakan layanan pengesahan tagihan pembelian.")
-        if old and old.status != self.status and (old.status, self.status) != ("draft", "approved"):
+        if (
+            old
+            and old.status != self.status
+            and (old.status, self.status) != ("draft", "approved")
+        ):
             raise ValidationError("Perubahan status tagihan pembelian tidak diizinkan.")
-        tax_changed = (old and (old.tax_status, old.tax_amount) != (self.tax_status, self.tax_amount)) or (not old and (self.tax_status != "review" or self.tax_amount is not None))
+        tax_changed = (
+            old
+            and (old.tax_status, old.tax_amount) != (self.tax_status, self.tax_amount)
+        ) or (not old and (self.tax_status != "review" or self.tax_amount is not None))
         if tax_changed and not getattr(self, "_tax_service_transition", False):
-            raise ValidationError("Keputusan potongan pajak hanya dapat dicatat melalui layanan tinjauan pajak.")
-        if self.tax_amount is not None and self.amount is not None and self.tax_amount >= self.amount:
-            raise ValidationError("Potongan pajak harus lebih kecil dari jumlah bruto tagihan.")
+            raise ValidationError(
+                "Keputusan potongan pajak hanya dapat dicatat melalui layanan tinjauan pajak."
+            )
+        if (
+            self.tax_amount is not None
+            and self.amount is not None
+            and self.tax_amount >= self.amount
+        ):
+            raise ValidationError(
+                "Potongan pajak harus lebih kecil dari jumlah bruto tagihan."
+            )
 
     def delete(self, *args, **kwargs):
         return self._delete_current_draft(*args, **kwargs)
@@ -312,8 +553,23 @@ class Bill(ScopedModel):
     @property
     def paid_amount(self):
         paid = self.payments.aggregate(amount=Sum("amount"))["amount"] or ZERO
-        withheld = WithholdingSettlement.objects.filter(bill=self).aggregate(amount=Sum("gross_amount"))["amount"] or ZERO
-        return paid + withheld
+        withheld = (
+            WithholdingSettlement.objects.filter(bill=self).aggregate(
+                amount=Sum("gross_amount")
+            )["amount"]
+            or ZERO
+        )
+        applications = (
+            self.supplier_advance_applications.aggregate(amount=Sum("amount"))["amount"]
+            or ZERO
+        )
+        reversals = (
+            SupplierAdvanceApplicationReversal.objects.filter(
+                application__bill=self
+            ).aggregate(amount=Sum("amount"))["amount"]
+            or ZERO
+        )
+        return paid + withheld + applications - reversals
 
     @property
     def outstanding_amount(self):
@@ -321,9 +577,13 @@ class Bill(ScopedModel):
 
     @property
     def prepaid_remaining(self):
-        if self.status != "approved" or not (self.category == "prepayment" or self.service_date > self.date):
+        if self.status != "approved" or not (
+            self.category == "prepayment" or self.service_date > self.date
+        ):
             return ZERO
-        return self.amount - (self.prepayment_releases.aggregate(amount=Sum("amount"))["amount"] or ZERO)
+        return self.amount - (
+            self.prepayment_releases.aggregate(amount=Sum("amount"))["amount"] or ZERO
+        )
 
 
 class BankAccount(ScopedModel):
@@ -333,7 +593,12 @@ class BankAccount(ScopedModel):
     opening_date = models.DateField(null=True, blank=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "account_number"], name="finance_bank_account_number")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "account_number"],
+                name="finance_bank_account_number",
+            )
+        ]
         ordering = ["name"]
 
     def clean(self):
@@ -341,15 +606,21 @@ class BankAccount(ScopedModel):
         old = self._old()
         if not getattr(self, "_opening_service_transition", False):
             self._unchanged(old, ("opening_balance", "opening_date"))
-            if not old and (self.opening_balance != ZERO or self.opening_date is not None):
-                raise ValidationError("Gunakan layanan saldo awal yang ditinjau pemilik.")
+            if not old and (
+                self.opening_balance != ZERO or self.opening_date is not None
+            ):
+                raise ValidationError(
+                    "Gunakan layanan saldo awal yang ditinjau pemilik."
+                )
 
     def __str__(self):
         return self.name
 
 
 class BankTransaction(ScopedModel):
-    account = models.ForeignKey(BankAccount, on_delete=models.PROTECT, related_name="transactions")
+    account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="transactions"
+    )
     reference = models.CharField(max_length=160)
     date = models.DateField()
     description = models.CharField(max_length=500, blank=True)
@@ -358,87 +629,149 @@ class BankTransaction(ScopedModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["organization", "account", "reference"], name="finance_bank_reference"),
-            models.CheckConstraint(condition=~Q(amount=0), name="finance_bank_amount_nonzero"),
+            models.UniqueConstraint(
+                fields=["organization", "account", "reference"],
+                name="finance_bank_reference",
+            ),
+            models.CheckConstraint(
+                condition=~Q(amount=0), name="finance_bank_amount_nonzero"
+            ),
         ]
         ordering = ["-date", "-pk"]
 
     def clean(self):
         super().clean()
-        self._unchanged(self._old(), ("account_id", "reference", "date", "description", "amount"))
+        self._unchanged(
+            self._old(), ("account_id", "reference", "date", "description", "amount")
+        )
         if not self.pk:
             if self.date and self.date > timezone.localdate():
-                raise ValidationError({"date": "Mutasi bank aktual tidak boleh bertanggal di masa depan."})
+                raise ValidationError(
+                    {"date": "Mutasi bank aktual tidak boleh bertanggal di masa depan."}
+                )
             if self.date:
                 assert_open_period(self.organization_id, self.date)
-                if self.account_id and self.account.opening_date and self.date < self.account.opening_date:
-                    raise ValidationError("Mutasi sebelum saldo awal memerlukan rekonstruksi migrasi, bukan impor tambahan.")
+                if (
+                    self.account_id
+                    and self.account.opening_date
+                    and self.date < self.account.opening_date
+                ):
+                    raise ValidationError(
+                        "Mutasi sebelum saldo awal memerlukan rekonstruksi migrasi, bukan impor tambahan."
+                    )
 
     @property
     def allocated_amount(self):
         receipts = self.allocations.aggregate(amount=Sum("amount"))["amount"] or ZERO
         payments = self.bill_payments.aggregate(amount=Sum("amount"))["amount"] or ZERO
         other = self.postings.aggregate(amount=Sum("signed_amount"))["amount"] or ZERO
-        return receipts - payments + other
+        from .opening_balances import opening_cash_cancellation_facts
+
+        # Cancellation facts also validate the complete refund graph before
+        # returning released cash; each source is checked once here.
+        released = opening_cash_cancellation_facts(
+            organization=self.organization, transaction=self
+        )["released"]
+        return receipts - payments + other - released
 
     @property
     def unallocated_amount(self):
         return self.amount - self.allocated_amount
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Mutasi bank adalah bukti sumber dan tidak boleh dihapus.")
+        raise ValidationError(
+            "Mutasi bank adalah bukti sumber dan tidak boleh dihapus."
+        )
 
 
 class Allocation(ScopedModel):
-    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="allocations")
-    transaction = models.ForeignKey(BankTransaction, on_delete=models.PROTECT, related_name="allocations")
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="allocations"
+    )
+    transaction = models.ForeignKey(
+        BankTransaction, on_delete=models.PROTECT, related_name="allocations"
+    )
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("invoice", "transaction")
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["invoice", "transaction"], name="finance_receipt_invoice_pair")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "transaction"], name="finance_receipt_invoice_pair"
+            )
+        ]
 
     def clean(self):
         super().clean()
         self._unchanged(self._old(), ("invoice_id", "transaction_id", "amount"))
         if not self.pk and not getattr(self, "_service_transition", False):
-            raise ValidationError("Gunakan rekonsiliasi penerimaan untuk membuat alokasi.")
+            raise ValidationError(
+                "Gunakan rekonsiliasi penerimaan untuk membuat alokasi."
+            )
         if self.transaction_id and self.transaction.amount <= ZERO:
-            raise ValidationError("Hanya mutasi masuk positif yang dapat dialokasikan sebagai penerimaan.")
+            raise ValidationError(
+                "Hanya mutasi masuk positif yang dapat dialokasikan sebagai penerimaan."
+            )
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Alokasi terposting memerlukan koreksi akuntansi, bukan penghapusan.")
+        raise ValidationError(
+            "Alokasi terposting memerlukan koreksi akuntansi, bukan penghapusan."
+        )
 
 
 class BillPayment(ScopedModel):
     bill = models.ForeignKey(Bill, on_delete=models.PROTECT, related_name="payments")
-    transaction = models.ForeignKey(BankTransaction, on_delete=models.PROTECT, related_name="bill_payments")
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    transaction = models.ForeignKey(
+        BankTransaction, on_delete=models.PROTECT, related_name="bill_payments"
+    )
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("bill", "transaction")
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["bill", "transaction"], name="finance_bill_payment_pair")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["bill", "transaction"], name="finance_bill_payment_pair"
+            )
+        ]
 
     def clean(self):
         super().clean()
         self._unchanged(self._old(), ("bill_id", "transaction_id", "amount"))
         if not self.pk and not getattr(self, "_service_transition", False):
-            raise ValidationError("Gunakan rekonsiliasi pembayaran untuk membuat alokasi.")
+            raise ValidationError(
+                "Gunakan rekonsiliasi pembayaran untuk membuat alokasi."
+            )
         if self.transaction_id and self.transaction.amount >= ZERO:
-            raise ValidationError("Pembayaran pemasok memerlukan mutasi keluar negatif.")
+            raise ValidationError(
+                "Pembayaran pemasok memerlukan mutasi keluar negatif."
+            )
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Pembayaran terposting memerlukan koreksi, bukan penghapusan.")
+        raise ValidationError(
+            "Pembayaran terposting memerlukan koreksi, bukan penghapusan."
+        )
 
 
 class AccountingPeriod(ScopedModel):
-    year = models.PositiveIntegerField(validators=[MinValueValidator(2000), MaxValueValidator(2200)])
-    month = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(12)])
+    year = models.PositiveIntegerField(
+        validators=[MinValueValidator(2000), MaxValueValidator(2200)]
+    )
+    month = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(12)]
+    )
     closed = models.BooleanField(default=False)
     closed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "year", "month"], name="finance_org_period")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "year", "month"], name="finance_org_period"
+            )
+        ]
         ordering = ["-year", "-month"]
 
     def clean(self):
@@ -456,11 +789,19 @@ class Journal(ScopedModel):
     date = models.DateField()
     description = models.CharField(max_length=250)
     source_key = models.CharField(max_length=160)
-    status = models.CharField(max_length=10, choices=[("draft", "Draf"), ("posted", "Terposting")], default="draft")
+    status = models.CharField(
+        max_length=10,
+        choices=[("draft", "Draf"), ("posted", "Terposting")],
+        default="draft",
+    )
     posted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "source_key"], name="finance_journal_source_key")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "source_key"], name="finance_journal_source_key"
+            )
+        ]
         ordering = ["-date", "-pk"]
 
     def clean(self):
@@ -470,14 +811,24 @@ class Journal(ScopedModel):
             raise ValidationError("Jurnal terposting tidak dapat diubah.")
         if self.status == "posted":
             if not self.pk or not getattr(self, "_service_transition", False):
-                raise ValidationError("Jurnal harus diposting melalui layanan buku besar.")
+                raise ValidationError(
+                    "Jurnal harus diposting melalui layanan buku besar."
+                )
             totals = self.lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
-            if self.lines.count() < 2 or not totals["debit"] or totals["debit"] != totals["credit"]:
-                raise ValidationError("Jurnal wajib seimbang dan memiliki setidaknya dua baris.")
+            if (
+                self.lines.count() < 2
+                or not totals["debit"]
+                or totals["debit"] != totals["credit"]
+            ):
+                raise ValidationError(
+                    "Jurnal wajib seimbang dan memiliki setidaknya dua baris."
+                )
             assert_open_period(self.organization_id, self.date)
 
     def delete(self, *args, **kwargs):
-        raise ValidationError("Jurnal tidak boleh dihapus. Gunakan pembalikan yang disetujui.")
+        raise ValidationError(
+            "Jurnal tidak boleh dihapus. Gunakan pembalikan yang disetujui."
+        )
 
 
 class JournalLine(ScopedModel):
@@ -494,23 +845,50 @@ class JournalLine(ScopedModel):
         CUSTOMER_ADVANCE = "CUSTOMER_ADVANCE", "Uang muka pelanggan belum diterapkan"
         CUSTOMER_REFUND = "CUSTOMER_REFUND", "Utang pengembalian pelanggan"
         TAX_PAYABLE = "TAX_PAYABLE", "Utang pajak potongan"
+        OWN_TAX_PAYABLE = "OWN_TAX_PAYABLE", "Utang pajak penghasilan perusahaan"
+        TAX_RECEIVABLE = "TAX_RECEIVABLE", "Kredit pajak potongan pelanggan"
+        TAX_EXPENSE = "TAX_EXPENSE", "Beban pajak penghasilan perusahaan"
+        SUPPLIER_ADVANCE = "SUPPLIER_ADVANCE", "Uang muka pemasok"
 
     journal = models.ForeignKey(Journal, on_delete=models.PROTECT, related_name="lines")
     account = models.CharField(max_length=30, choices=Account.choices)
-    debit = models.DecimalField(max_digits=20, decimal_places=2, default=ZERO, validators=[MinValueValidator(ZERO)])
-    credit = models.DecimalField(max_digits=20, decimal_places=2, default=ZERO, validators=[MinValueValidator(ZERO)])
+    debit = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=ZERO,
+        validators=[MinValueValidator(ZERO)],
+    )
+    credit = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=ZERO,
+        validators=[MinValueValidator(ZERO)],
+    )
     scoped_references = ("journal",)
 
     class Meta:
-        constraints = [models.CheckConstraint(condition=(Q(debit__gt=0) & Q(credit=0)) | (Q(credit__gt=0) & Q(debit=0)), name="finance_journal_single_side")]
+        constraints = [
+            models.CheckConstraint(
+                condition=(Q(debit__gt=0) & Q(credit=0))
+                | (Q(credit__gt=0) & Q(debit=0)),
+                name="finance_journal_single_side",
+            )
+        ]
 
     def clean(self):
         super().clean()
-        if self.journal_id and Journal.objects.filter(pk=self.journal_id, status="posted").exists():
-            raise ValidationError("Baris jurnal terposting tidak dapat ditambahkan/diubah.")
+        if (
+            self.journal_id
+            and Journal.objects.filter(pk=self.journal_id, status="posted").exists()
+        ):
+            raise ValidationError(
+                "Baris jurnal terposting tidak dapat ditambahkan/diubah."
+            )
         old = self._old()
         if old and old.journal.status == "posted":
-            raise ValidationError("Baris jurnal terposting tidak dapat dipindahkan/diubah.")
+            raise ValidationError(
+                "Baris jurnal terposting tidak dapat dipindahkan/diubah."
+            )
 
     def delete(self, *args, **kwargs):
         if Journal.objects.filter(pk=self.journal_id, status="posted").exists():
@@ -520,6 +898,7 @@ class JournalLine(ScopedModel):
 
 class FinancialEvent(ScopedModel):
     """One immutable, scoped accounting decision linked to its posted journal."""
+
     journal = models.ForeignKey(Journal, on_delete=models.PROTECT)
     date = models.DateField()
     reference = models.CharField(max_length=120)
@@ -533,55 +912,115 @@ class FinancialEvent(ScopedModel):
         super().clean()
         old = self._old()
         if old:
-            self._unchanged(old, tuple(field.attname for field in self._meta.concrete_fields if field.name not in {"id", "created_at"}))
+            self._unchanged(
+                old,
+                tuple(
+                    field.attname
+                    for field in self._meta.concrete_fields
+                    if field.name not in {"id", "created_at"}
+                ),
+            )
         elif not getattr(self, "_service_transition", False):
-            raise ValidationError("Gunakan layanan akuntansi untuk mencatat peristiwa keuangan.")
-        if self.journal_id and (self.journal.status != "posted" or self.journal.date != self.date):
-            raise ValidationError("Peristiwa harus terhubung ke jurnal terposting pada tanggal yang sama.")
+            raise ValidationError(
+                "Gunakan layanan akuntansi untuk mencatat peristiwa keuangan."
+            )
+        if self.journal_id and (
+            self.journal.status != "posted" or self.journal.date != self.date
+        ):
+            raise ValidationError(
+                "Peristiwa harus terhubung ke jurnal terposting pada tanggal yang sama."
+            )
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Riwayat akuntansi tidak boleh dihapus.")
 
 
 class BankPosting(FinancialEvent):
-    transaction = models.ForeignKey(BankTransaction, on_delete=models.PROTECT, related_name="postings")
-    kind = models.CharField(max_length=30, choices=[(value, label) for value, label in [
-        ("bank_fee", "Biaya bank"), ("owner_funding", "Setoran modal pemilik"),
-        ("transfer_out", "Transfer keluar"), ("transfer_in", "Transfer masuk"),
-        ("customer_advance", "Uang muka pelanggan"), ("customer_refund", "Pengembalian pelanggan"),
-        ("withheld_supplier", "Pembayaran bersih pemasok"), ("tax_remittance", "Penyetoran potongan pajak")]])
+    transaction = models.ForeignKey(
+        BankTransaction, on_delete=models.PROTECT, related_name="postings"
+    )
+    kind = models.CharField(
+        max_length=30,
+        choices=[
+            (value, label)
+            for value, label in [
+                ("bank_fee", "Biaya bank"),
+                ("owner_funding", "Setoran modal pemilik"),
+                ("transfer_out", "Transfer keluar"),
+                ("transfer_in", "Transfer masuk"),
+                ("customer_advance", "Uang muka pelanggan"),
+                ("customer_refund", "Pengembalian pelanggan"),
+                ("withheld_supplier", "Pembayaran bersih pemasok"),
+                ("tax_remittance", "Penyetoran potongan pajak"),
+                ("customer_tax_receipt", "Penerimaan pelanggan setelah potongan pajak"),
+                ("own_tax_payment", "Pembayaran pajak perusahaan"),
+                ("supplier_advance", "Uang muka pemasok"),
+                ("supplier_advance_refund", "Pengembalian uang muka pemasok"),
+                ("payroll_payment", "Pembayaran payroll yang dicocokkan"),
+                ("opening_receipt", "Penerimaan piutang lama"),
+                ("opening_payment", "Pembayaran utang lama"),
+                ("opening_receipt_refund", "Pengembalian penerimaan piutang lama"),
+                ("opening_payment_refund", "Pengembalian pembayaran utang lama"),
+            ]
+        ],
+    )
     signed_amount = models.DecimalField(max_digits=20, decimal_places=2)
     scoped_references = ("journal", "transaction")
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "reference"], name="finance_bank_posting_reference"),
-                       models.CheckConstraint(condition=~Q(signed_amount=0), name="finance_bank_posting_nonzero")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "reference"],
+                name="finance_bank_posting_reference",
+            ),
+            models.CheckConstraint(
+                condition=~Q(signed_amount=0), name="finance_bank_posting_nonzero"
+            ),
+        ]
 
     def clean(self):
         super().clean()
-        if self.transaction_id and (self.date != self.transaction.date or self.signed_amount * self.transaction.amount <= ZERO):
+        if self.transaction_id and (
+            self.date != self.transaction.date
+            or self.signed_amount * self.transaction.amount <= ZERO
+        ):
             raise ValidationError("Tanggal dan arah alokasi harus sesuai bukti bank.")
 
 
 class BankOpening(FinancialEvent):
-    account = models.OneToOneField(BankAccount, on_delete=models.PROTECT, related_name="opening_record")
+    account = models.OneToOneField(
+        BankAccount, on_delete=models.PROTECT, related_name="opening_record"
+    )
     amount = models.DecimalField(max_digits=20, decimal_places=2)
     scoped_references = ("journal", "account")
 
 
 class PrepaymentRelease(FinancialEvent):
-    bill = models.ForeignKey(Bill, on_delete=models.PROTECT, related_name="prepayment_releases")
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    bill = models.ForeignKey(
+        Bill, on_delete=models.PROTECT, related_name="prepayment_releases"
+    )
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("journal", "bill")
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "reference"], name="finance_prepayment_reference")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "reference"],
+                name="finance_prepayment_reference",
+            )
+        ]
 
 
 class CustomerAdvance(FinancialEvent):
-    party = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="customer_advances")
+    party = models.ForeignKey(
+        Party, on_delete=models.PROTECT, related_name="customer_advances"
+    )
     bank_posting = models.OneToOneField(BankPosting, on_delete=models.PROTECT)
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("journal", "party", "bank_posting")
 
     @property
@@ -592,17 +1031,30 @@ class CustomerAdvance(FinancialEvent):
 
 
 class AdvanceApplication(FinancialEvent):
-    advance = models.ForeignKey(CustomerAdvance, on_delete=models.PROTECT, related_name="applications")
-    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="advance_applications")
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    advance = models.ForeignKey(
+        CustomerAdvance, on_delete=models.PROTECT, related_name="applications"
+    )
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="advance_applications"
+    )
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("journal", "advance", "invoice")
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "reference"], name="finance_advance_application_reference")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "reference"],
+                name="finance_advance_application_reference",
+            )
+        ]
 
 
 class InvoiceCancellation(FinancialEvent):
-    invoice = models.OneToOneField(Invoice, on_delete=models.PROTECT, related_name="cancellation")
+    invoice = models.OneToOneField(
+        Invoice, on_delete=models.PROTECT, related_name="cancellation"
+    )
     amount = models.DecimalField(max_digits=20, decimal_places=2)
     unpaid_amount = models.DecimalField(max_digits=20, decimal_places=2)
     refund_amount = models.DecimalField(max_digits=20, decimal_places=2)
@@ -610,23 +1062,53 @@ class InvoiceCancellation(FinancialEvent):
 
     @property
     def refund_remaining(self):
-        return self.refund_amount - (self.refunds.aggregate(value=Sum("amount"))["value"] or ZERO)
+        return self.refund_amount - (
+            self.refunds.aggregate(value=Sum("amount"))["value"] or ZERO
+        )
 
 
 class CustomerRefund(FinancialEvent):
-    advance = models.ForeignKey(CustomerAdvance, null=True, blank=True, on_delete=models.PROTECT, related_name="refunds")
-    cancellation = models.ForeignKey(InvoiceCancellation, null=True, blank=True, on_delete=models.PROTECT, related_name="refunds")
+    advance = models.ForeignKey(
+        CustomerAdvance,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="refunds",
+    )
+    cancellation = models.ForeignKey(
+        InvoiceCancellation,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="refunds",
+    )
     bank_posting = models.OneToOneField(BankPosting, on_delete=models.PROTECT)
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("journal", "advance", "cancellation", "bank_posting")
 
     class Meta:
-        constraints = [models.CheckConstraint(condition=(Q(advance__isnull=False, cancellation__isnull=True) | Q(advance__isnull=True, cancellation__isnull=False)), name="finance_refund_one_source")]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(advance__isnull=False, cancellation__isnull=True)
+                    | Q(advance__isnull=True, cancellation__isnull=False)
+                ),
+                name="finance_refund_one_source",
+            )
+        ]
 
 
 class WithholdingSettlement(FinancialEvent):
-    bill = models.OneToOneField(Bill, on_delete=models.PROTECT, related_name="withholding_settlement")
-    obligation = models.OneToOneField("taxes.TaxObligation", on_delete=models.PROTECT, related_name="withholding_settlement")
+    bill = models.OneToOneField(
+        Bill, on_delete=models.PROTECT, related_name="withholding_settlement"
+    )
+    obligation = models.OneToOneField(
+        "taxes.TaxObligation",
+        on_delete=models.PROTECT,
+        related_name="withholding_settlement",
+    )
     bank_posting = models.OneToOneField(BankPosting, on_delete=models.PROTECT)
     gross_amount = models.DecimalField(max_digits=20, decimal_places=2)
     net_amount = models.DecimalField(max_digits=20, decimal_places=2)
@@ -635,7 +1117,79 @@ class WithholdingSettlement(FinancialEvent):
 
 
 class TaxRemittance(FinancialEvent):
-    obligation = models.ForeignKey("taxes.TaxObligation", on_delete=models.PROTECT, related_name="remittances")
+    obligation = models.ForeignKey(
+        "taxes.TaxObligation", on_delete=models.PROTECT, related_name="remittances"
+    )
     bank_posting = models.OneToOneField(BankPosting, on_delete=models.PROTECT)
-    amount = models.DecimalField(max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    amount = models.DecimalField(
+        max_digits=20, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))]
+    )
     scoped_references = ("journal", "obligation", "bank_posting")
+
+
+from .costing_models import (
+    CostAllocation as CostAllocation,
+)
+from .costing_models import (
+    CostReversal as CostReversal,
+)
+from .costing_models import (
+    PriceOverrideDecision as PriceOverrideDecision,
+)
+from .costing_models import (
+    PriceOverrideRequest as PriceOverrideRequest,
+)
+from .costing_models import (
+    PriceOverrideUse as PriceOverrideUse,
+)
+from .fulfillment_models import (
+    CreditRefund as CreditRefund,
+)
+from .fulfillment_models import (
+    InvoiceCredit as InvoiceCredit,
+)
+from .fulfillment_models import (
+    InvoiceDelivery as InvoiceDelivery,
+)
+from .opening_balance_models import (
+    OpeningBalanceCancellation as OpeningBalanceCancellation,
+)
+from .opening_balance_models import (
+    OpeningBalanceCorrection as OpeningBalanceCorrection,
+)
+from .opening_balance_models import (
+    OpeningBalanceItem as OpeningBalanceItem,
+)
+from .opening_balance_models import (
+    OpeningBalanceRefund as OpeningBalanceRefund,
+)
+from .opening_balance_models import (
+    OpeningBalanceSettlement as OpeningBalanceSettlement,
+)
+from .statement_models import (
+    StatementPeriodReview as StatementPeriodReview,
+)
+from .supplier_advance_models import (
+    SupplierAdvance as SupplierAdvance,
+)
+from .supplier_advance_models import (
+    SupplierAdvanceApplication as SupplierAdvanceApplication,
+)
+from .supplier_advance_models import (
+    SupplierAdvanceApplicationReversal,
+)
+from .supplier_advance_models import (
+    SupplierAdvanceRefund as SupplierAdvanceRefund,
+)
+from .tax_money_models import (
+    CustomerTaxSettlement as CustomerTaxSettlement,
+)
+from .tax_money_models import (
+    OwnTaxCreditApplication as OwnTaxCreditApplication,
+)
+from .tax_money_models import (
+    OwnTaxPayment as OwnTaxPayment,
+)
+from .tax_money_models import (
+    OwnTaxRecognition as OwnTaxRecognition,
+)

@@ -1,4 +1,5 @@
 """Real PostgreSQL locking checks; explicitly skipped by the SQLite suite."""
+
 from concurrent.futures import ThreadPoolExecutor
 from unittest import skipUnless
 
@@ -14,9 +15,12 @@ class PostgreSQLThrottleTests(TransactionTestCase):
         def attempt(_):
             close_old_connections()
             try:
-                return allow_login_attempt(username="concurrent-account", remote_addr="192.0.2.55")
+                return allow_login_attempt(
+                    username="concurrent-account", remote_addr="192.0.2.55"
+                )
             finally:
                 connections.close_all()
+
         with ThreadPoolExecutor(max_workers=8) as executor:
             results = list(executor.map(attempt, range(24)))
         self.assertEqual(sum(results), 10)

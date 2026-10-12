@@ -1,0 +1,3 @@
+<section class="panel m-panel"><h2>Apakah data target sudah lengkap?</h2><div class="m-callout">{{ evaluation.completeness.label }}</div>
+{% if marketing_write and target.metric_key != 'spend' %}<a class="button button-secondary" href="{% url 'marketing:source_period_create' target.pk %}">Daftarkan seluruh sumber untuk diperiksa</a>{% endif %}
+{% for period in source_periods %}<p><a href="{% url 'marketing:source_period_detail' period.pk %}">{{ period.reference }}</a> · {{ period.get_status_display }} · {{ period.created_at }}</p>{% empty %}<p>Belum ada daftar sumber untuk target ini. Untuk target biaya iklan, kelengkapan laporan diperiksa melalui kampanye.</p>{% endfor %}</section>

@@ -1,0 +1,14 @@
+{% load finance_format %}
+<section class="panel settings-section">
+  <div class="panel-heading"><div><h2>Bukti potong yang diterima setelah pembayaran</h2><p>Kredit pajak melunasi sisa invoice. Uang bank dari pembayaran lama tidak dicatat lagi.</p></div></div>
+  {% for item in late_credits %}
+  <article class="panel-body">
+    <h3><a class="text-link" href="{% url 'sale_detail' item.invoice_id %}">{{ item.invoice.number }}</a> · {{ item.invoice.party.name }}</h3>
+    <dl class="compact-details"><div><dt>Kredit dicatat</dt><dd>{{ item.date|iddate }}</dd></div><div><dt>Uang bank sebelumnya{% if item.source_advance_application_id %} untuk uang muka{% endif %}</dt><dd>{% if item.source_advance_application_id %}{{ item.source_advance_application.advance.amount|money }}{% else %}{{ item.source_allocation.amount|money }}{% endif %}</dd></div>{% if item.source_advance_application_id %}<div><dt>Uang muka digunakan untuk invoice</dt><dd>{{ item.source_advance_application.amount|money }} · {{ item.source_advance_application.date|iddate }}</dd></div>{% endif %}<div><dt>Kredit pajak baru</dt><dd><strong>{{ item.tax_amount|money }}</strong></dd></div><div><dt>Uang bank baru</dt><dd>Rp0</dd></div></dl>
+    {% if item.source_advance_application_id %}<p class="small muted">Uang masuk bank: {{ item.source_advance_application.advance.bank_posting.transaction.date|iddate }} · {{ item.source_advance_application.advance.bank_posting.transaction.account.name }} · {{ item.source_advance_application.advance.bank_posting.transaction.reference }}.</p>{% else %}<p class="small muted">Pembayaran lama: {{ item.source_allocation.transaction.date|iddate }} · {{ item.source_allocation.transaction.account.name }} · {{ item.source_allocation.transaction.reference }}.</p>{% endif %}
+    <a class="text-link" href="{% url 'taxes:obligation' item.obligation_id %}">Lihat bukti potong dan pemeriksaannya</a>
+    <details><summary>Catatan pencatatan kredit</summary><p>{{ item.evidence|linebreaksbr }}</p></details>
+  </article>
+  {% empty %}<div class="panel-body">Belum ada bukti potong yang dicatat setelah pencocokan pembayaran.</div>{% endfor %}
+  {% if late_credit_page.has_other_pages %}<nav class="form-actions" aria-label="Halaman bukti potong setelah pembayaran"><span>Halaman {{ late_credit_page.number }} dari {{ late_credit_page.paginator.num_pages }}</span>{% if late_credit_page.has_previous %}<a href="?credits_page={{ late_credit_page.previous_page_number }}">Sebelumnya</a>{% endif %}{% if late_credit_page.has_next %}<a href="?credits_page={{ late_credit_page.next_page_number }}">Berikutnya</a>{% endif %}</nav>{% endif %}
+</section>

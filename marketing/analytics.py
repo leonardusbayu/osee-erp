@@ -1,42 +1,41 @@
 """Tenant-scoped marketing facts. Receipt dates and lead cohorts stay separate."""
-from collections import defaultdict
-from datetime import date, datetime, time, timedelta
-from decimal import Decimal, ROUND_HALF_UP
-from statistics import median
-from zoneinfo import ZoneInfo
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Sum
 from django.utils import timezone
 
 from core.models import Organization
-from finance.models import Allocation
-from director.models import CHANNEL_CHOICES
-from .models import AdDailyObservation, Campaign, Lead
-from .coverage import confirmed_campaigns
+from director.models import MarketingObservation
 
-
-JAKARTA = ZoneInfo("Asia/Jakarta")
-ZERO = Decimal("0")
-GROUP_BY_CHOICES = (
-    ("channel", "Kanal"), ("campaign", "Kampanye"), ("member", "Penanggung jawab lead"),
-    ("product", "Produk"), ("segment", "Segmen"), ("region", "Wilayah lead"), ("ad", "Iklan"),
+from .ad_sources import ad_source_state
+from .analytics_metrics import (
+    CASH_NOTE,
+    COST_COVERAGE_NOTE,
+    FILTER_KEYS,
+    GROUP_BY_CHOICES,
+    JAKARTA,
+    PRODUCT_SPEND_NOTE,
+    _number,
 )
-DIMENSIONS = GROUP_BY_CHOICES
-FILTER_KEYS = {"channel", "campaign", "member", "product", "segment", "region", "ad"}
-SPEND_NOTE = "Belanja iklan tidak dapat dipetakan ke penanggung jawab lead, segmen, atau wilayah lead dengan data yang tersedia."
-CASH_NOTE = "Lead belum memiliki tautan ke iklan individual; kas per iklan belum tersedia."
-PRODUCT_SPEND_NOTE = "Belanja masih subtotal yang sudah dipetakan ke produk. Sebagian penerimaan berasal dari kampanye dengan produk yang belum diketahui atau berbeda; rasio kas/belanja produk belum tersedia."
-COST_COVERAGE_NOTE = "Belanja masih subtotal yang diketahui. Ada penerimaan dari kampanye tanpa bukti belanja periode ini atau tanpa pengaitan kampanye. Lengkapi sumber biaya, termasuk nol yang terverifikasi, sebelum menghitung rasio kas/belanja."
+from .analytics_period import _period
 
 
-def _number(value):
-    return format(Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f") if value is not None else None
-
-
-def _percent(numerator, denominator):
-    return _number(Decimal(numerator) * 100 / Decimal(denominator)) if denominator else None
+@dataclass(frozen=True)
+class QualityNotesContext:
+    summary: dict
+    rows: list
+    coverage: dict
+    group_by: str
+    filters: dict
+    start: date
+    end: date
+    today: date
+    comparison_span: timedelta
 
 
 def _date(value):
@@ -51,7 +50,9 @@ def _date(value):
 def _validate(start, end, group_by, filters):
     start, end = _date(start), _date(end)
     if end < start or (end - start).days > 730 or start.year < 2000 or end.year > 2200:
-        raise ValidationError("Periode analisis harus berurutan, maksimal 731 hari, dalam tahun 2000–2200.")
+        raise ValidationError(
+            "Periode analisis harus berurutan, maksimal 731 hari, dalam tahun 2000–2200."
+        )
     if group_by not in dict(GROUP_BY_CHOICES):
         raise ValidationError("Dimensi analisis tidak dikenal.")
     if filters is not None and not isinstance(filters, dict):
@@ -64,7 +65,11 @@ def _validate(start, end, group_by, filters):
             continue
         if key in {"campaign", "member", "product"}:
             try:
-                if isinstance(value, bool) or str(int(value)) != str(value) or int(value) <= 0:
+                if (
+                    isinstance(value, bool)
+                    or str(int(value)) != str(value)
+                    or int(value) <= 0
+                ):
                     raise ValueError
                 value = int(value)
             except (TypeError, ValueError):
@@ -75,277 +80,135 @@ def _validate(start, end, group_by, filters):
     return start, end, clean
 
 
-def _lead_value(lead, key):
-    if key == "campaign":
-        return lead.campaign_id
-    if key == "member":
-        return lead.owner_id
-    if key == "product":
-        return lead.product_id or (lead.invoice.product_id if lead.invoice_id else None)
-    return getattr(lead, key, "")
+def _quality_notes(context: QualityNotesContext):
+    summary = context.summary
+    rows = context.rows
+    coverage = context.coverage
+    group_by = context.group_by
+    filters = context.filters
+    start = context.start
+    end = context.end
+    today = context.today
+    comparison_span = context.comparison_span
+    notes = [
+        "Invoice dari satu pesanan dapat terkait ke satu peluang pembelian; setiap invoice tetap dihitung sekali. Pesanan dengan beberapa produk masuk kelompok multiproduk dan tidak masuk filter satu produk; rincian produk tersedia pada pesanan.",
+        "Dimensi anggota mengacu PIC saat prospek dicatat. Alih tugas mengubah PIC operasional, bukan atribusi historis.",
+        "Uang masuk bruto memakai alokasi penerimaan bank ke invoice, termasuk penerimaan setelah potongan PPh23. Kas setelah refund mengurangi refund invoice aktual yang dibayar melalui bank pada tanggal mutasi; kewajiban refund yang belum dibayar, refund uang muka, chargeback, dan penerimaan/piutang lama tidak masuk hitungan. Kas setelah refund bukan laba.",
+        "Konversi pembayaran memakai prospek dalam periode dan pelunasan yang diterapkan ke invoice sampai akhir pengamatan, termasuk uang muka dan kredit pajak terverifikasi. Penerapan uang muka dan kredit pajak bukan uang masuk kedua.",
+        "Rasio kas/belanja periode adalah indikator operasional, bukan ROAS kausal atau ROAS cohort. Jangan menjumlahkan rasio antar baris.",
+        "Respons memakai lead dengan waktu respons tercatat; respons kosong tidak dianggap nol menit. Perbandingan anggota perlu mempertimbangkan kanal, segmen, beban, dan umur lead.",
+        "Janji masuk hitungan menurut tanggal tenggat. Tepat waktu memerlukan bukti penyelesaian yang tercatat dan terjadi selambatnya pada tenggat; koreksi yang dicatat sesudah tenggat tidak dapat mengubahnya menjadi tepat waktu.",
+        "Prospek lunas penuh berarti semua invoice aktif yang masih bernilai neto untuk prospek itu telah dilunasi; pembayaran sebagian tetap terlihat sebagai pembayaran, tetapi tidak sebagai lunas.",
+        "Cakupan pengaitan tidak menjamin seluruh mutasi bank atau pengeluaran perusahaan telah diimpor.",
+    ]
+    if Decimal(coverage["unattributed_receipts"]) > 0:
+        notes.append(
+            "Sebagian penerimaan belum terhubung dengan lead. Lengkapi pengaitan invoice sebelum menyimpulkan kontribusi marketing."
+        )
+    if Decimal(coverage["unattributed_invoice_refunds"]) > 0:
+        notes.append(
+            "Sebagian refund invoice aktual belum terhubung dengan lead. Cakupan ini terlihat terpisah dan refund tersebut tidak dibebankan ke kampanye atau tim tertentu."
+        )
+    if not summary["spend_complete"]:
+        notes.append(summary["spend_note"])
+    notes.append(summary["source_coverage_note"])
+    if group_by == "member" or "member" in filters:
+        notes.append(
+            "Aktivitas follow-up masuk ke kelompok PIC prospek saat prospek dicatat; angka ini bukan pembagian berdasarkan akun yang mencatat kontak."
+        )
+    if (
+        any(not item["product_mapping_complete"] for item in rows)
+        and PRODUCT_SPEND_NOTE not in notes
+    ):
+        notes.append(PRODUCT_SPEND_NOTE)
+    if (
+        any(not item["cash_cost_coverage_complete"] for item in rows)
+        and COST_COVERAGE_NOTE not in notes
+    ):
+        notes.append(COST_COVERAGE_NOTE)
+    if group_by == "ad" or "ad" in filters:
+        notes.append(CASH_NOTE)
+    if end < timezone.localdate(timezone=JAKARTA):
+        notes.append(
+            "Antrean follow-up yang terlambat hanya menunjukkan kondisi hari ini; angka janji tepat waktu memakai riwayat tenggat dan penyelesaian."
+        )
+    if end > today:
+        notes.append(
+            f"Data aktual hanya dihitung sampai {today.isoformat()}. Periode masa depan belum memiliki hasil; mutasi dan belanja bertanggal masa depan dikecualikan."
+        )
+        if start <= today:
+            notes.append(
+                f"Perbandingan menggunakan {comparison_span.days + 1} hari yang sudah teramati dan periode sebelumnya dengan panjang sama."
+            )
+    notes.append(
+        "Sepakat membeli belum berarti lunas. Follow-up tetap memuat prospek sepakat dengan invoice yang belum lunas; piutang ini bukan penerimaan kas."
+    )
+    return notes
 
 
-def _lead_group(lead, group_by):
-    value = _lead_value(lead, group_by)
-    if group_by == "campaign":
-        label = lead.campaign.name if lead.campaign_id else "Tanpa kampanye"
-    elif group_by == "member":
-        label = lead.owner.name if lead.owner_id else "Belum ditugaskan"
-    elif group_by == "product":
-        product = lead.product or (lead.invoice.product if lead.invoice_id else None)
-        label = product.name if product else "Produk belum diketahui"
-    elif group_by == "segment":
-        label = {"direct": "Langsung", "reseller": "Reseller", "institution": "Institusi"}.get(value, value)
-    elif group_by == "channel":
-        label = dict(CHANNEL_CHOICES).get(value, value or "Belum diketahui")
-    else:
-        label = value or "Belum diketahui"
-    return str(value or "unknown"), label
-
-
-def _ad_group(observation, group_by):
-    campaign = observation.campaign
-    if group_by == "campaign":
-        return str(campaign.pk), campaign.name
-    if group_by == "product":
-        return str(campaign.product_id or "unknown"), campaign.product.name if campaign.product_id else "Produk belum diketahui"
-    if group_by == "ad":
-        return f"{campaign.pk}:{observation.ad_name}", f"{campaign.name} · {observation.ad_name or 'Iklan tanpa nama'}"
-    return campaign.channel or "unknown", dict(CHANNEL_CHOICES).get(campaign.channel, campaign.channel or "Belum diketahui")
-
-
-def _bucket(label):
-    return {"label": label, "cash": ZERO, "cohort": [], "spend_values": [], "impressions_values": [], "clicks_values": [], "ad_rows": 0,
-            "overdue": 0, "unpaid_won": 0, "unpaid_won_amount": ZERO, "contexts": set(),
-            "cash_campaign_ids": set(), "spend_campaign_ids": set(), "product_mapping_complete": True}
-
-
-def _metrics(bucket, paid_by_invoice, cutoff, *, spend_available, cash_available, applied_by_invoice=None):
-    leads = bucket["cohort"]
-    applied_by_invoice = paid_by_invoice if applied_by_invoice is None else applied_by_invoice
-    paid = [lead for lead in leads if lead.invoice_id and applied_by_invoice.get(lead.invoice_id, ZERO) > 0]
-    responses = [Decimal(str((lead.first_response_at - lead.received_at).total_seconds())) / 60
-                 for lead in leads if lead.first_response_at and lead.received_at <= lead.first_response_at < cutoff]
-    known_spend = bucket["spend_values"]
-    spend = sum(known_spend, ZERO) if spend_available and known_spend else None
-    cost_coverage_complete = not (bucket["cash_campaign_ids"] - bucket["spend_campaign_ids"])
-    complete_spend = spend_available and bucket["ad_rows"] > 0 and len(known_spend) == bucket["ad_rows"] and cost_coverage_complete and bucket["product_mapping_complete"]
-    impressions = sum(bucket["impressions_values"]) if spend_available and bucket["impressions_values"] else None
-    clicks = sum(bucket["clicks_values"]) if spend_available and bucket["clicks_values"] else None
-    complete_impressions = spend_available and bucket["ad_rows"] > 0 and len(bucket["impressions_values"]) == bucket["ad_rows"]
-    complete_clicks = spend_available and bucket["ad_rows"] > 0 and len(bucket["clicks_values"]) == bucket["ad_rows"]
-    cash = bucket["cash"] if cash_available else None
+def _legacy_summary(organization, start, end):
+    old = MarketingObservation.objects.filter(
+        organization=organization, status="active", date__range=(start, end)
+    )
     return {
-        "cash_in": _number(cash), "net_cash_in": None, "spend": _number(spend), "leads": len(leads) if cash_available else None,
-        "cohort_paid_leads": len(paid) if cash_available else None,
-        "cohort_paid_conversion": _percent(len(paid), len(leads)) if cash_available else None,
-        "cohort_cash_in": _number(sum((paid_by_invoice.get(lead.invoice_id, ZERO) for lead in paid), ZERO)) if cash_available else None,
-        "cohort_applied_payments": _number(sum((applied_by_invoice[lead.invoice_id] for lead in paid), ZERO)) if cash_available else None,
-        "median_response_minutes": _number(median(responses)) if responses else None,
-        "followed_up_leads": len(responses) if cash_available else None,
-        "response_coverage_percent": _percent(len(responses), len(leads)) if cash_available else None,
-        "overdue_followups": bucket["overdue"] if cash_available else None,
-        "unpaid_won_leads": bucket["unpaid_won"] if cash_available else None,
-        "unpaid_won_amount": _number(bucket["unpaid_won_amount"]) if cash_available else None,
-        "cash_to_spend": _number(cash / spend) if cash is not None and complete_spend and spend > 0 else None,
-        "spend_known_rows": len(known_spend), "spend_rows": bucket["ad_rows"],
-        "spend_complete": complete_spend,
-        "recorded_spend_complete": complete_spend,
-        "source_period_complete": False,
-        "source_coverage_note": "Cakupan sumber untuk periode ini belum dikonfirmasi. Rasio hanya memakai biaya yang tercatat.",
-        "cash_cost_coverage_complete": cost_coverage_complete,
-        "product_mapping_complete": bucket["product_mapping_complete"],
-        "impressions": impressions, "clicks": clicks,
-        "impressions_known_rows": len(bucket["impressions_values"]), "clicks_known_rows": len(bucket["clicks_values"]),
-        "impressions_complete": complete_impressions, "clicks_complete": complete_clicks,
-        "ctr": _percent(clicks, impressions) if complete_clicks and complete_impressions else None,
-        "cpc": _number(spend / clicks) if complete_spend and complete_clicks and clicks else None,
-        "cpm": _number(spend * 1000 / impressions) if complete_spend and complete_impressions and impressions else None,
-        "spend_note": SPEND_NOTE if not spend_available else PRODUCT_SPEND_NOTE if not bucket["product_mapping_complete"] else COST_COVERAGE_NOTE if not cost_coverage_complete else ("Belanja sebagian belum diketahui." if bucket["ad_rows"] > len(known_spend) else "Belum ada belanja tercatat." if not known_spend else "Belanja dilaporkan dari sumber iklan."),
-        "cash_note": CASH_NOTE if not cash_available else "Penerimaan bruto teralokasi, berdasarkan tanggal mutasi bank; bukan laba atau kas bersih.",
-        "contexts": sorted(bucket["contexts"]),
+        "reported_spend": _number(old.aggregate(value=Sum("spend"))["value"]),
+        "reported_value": _number(old.aggregate(value=Sum("reported_value"))["value"]),
+        "rows": old.count(),
+        "basis": "Rekap lama seluruh organisasi pada periode ini, tanpa filter dimensi; tidak digabungkan dengan kas atau belanja iklan rinci.",
     }
-
-
-def _period(organization, start, end, group_by, filters):
-    from finance.settlement import applied_payment_amounts, collectible_amounts
-
-    today = timezone.localdate(timezone=JAKARTA)
-    observation_end = min(end, today)
-    cutoff = datetime.combine(observation_end + timedelta(days=1), time.min, JAKARTA)
-    beginning = datetime.combine(start, time.min, JAKARTA)
-    cash_available = group_by != "ad" and "ad" not in filters
-    spend_available = group_by in {"channel", "campaign", "product", "ad"} and not ({"member", "segment", "region"} & filters.keys())
-    all_leads = list(Lead.objects.filter(organization=organization).select_related("campaign", "owner", "product", "invoice__product"))
-    linked = {lead.invoice_id: lead for lead in all_leads if lead.invoice_id}
-    selected = [lead for lead in all_leads if all(_lead_value(lead, key) == value for key, value in filters.items() if key != "ad")]
-    selected_ids = {lead.pk for lead in selected}
-    invoice_ids = [lead.invoice_id for lead in selected if lead.invoice_id]
-    applied_by_invoice = applied_payment_amounts(organization=organization, invoice_ids=invoice_ids, as_of=observation_end)
-    paid_by_invoice = dict(Allocation.objects.filter(
-        organization=organization, invoice__organization=organization, transaction__organization=organization,
-        invoice_id__in=invoice_ids, transaction__date__lte=observation_end,
-    ).values("invoice_id").annotate(total=Sum("amount")).values_list("invoice_id", "total"))
-    collectible = collectible_amounts(organization=organization, invoice_ids=invoice_ids, as_of=observation_end)
-    rows = {}
-    summary = _bucket("Total")
-
-    def row(lead):
-        key, label = _lead_group(lead, group_by)
-        return rows.setdefault(key, _bucket(label))
-
-    if cash_available:
-        for lead in selected:
-            if beginning <= lead.received_at < cutoff:
-                summary["cohort"].append(lead)
-                item = row(lead)
-                item["cohort"].append(lead)
-                item["contexts"].add(f"{lead.channel or 'Kanal belum diketahui'} · {lead.segment}")
-            # Outstanding work is a present-day operational measure, not historical status reconstructed from current stage.
-            unpaid = not lead.invoice_id or collectible.get(lead.invoice_id, ZERO) > ZERO
-            if start <= today <= end and lead.received_at < cutoff and lead.next_follow_up and lead.next_follow_up < today and lead.stage != "lost" and unpaid:
-                summary["overdue"] += 1
-                row(lead)["overdue"] += 1
-            if start <= today <= end and lead.received_at < cutoff and lead.stage == "won" and lead.invoice_id and unpaid:
-                outstanding = collectible[lead.invoice_id]
-                for bucket in (summary, row(lead)):
-                    bucket["unpaid_won"] += 1
-                    bucket["unpaid_won_amount"] += outstanding
-
-    receipts = Allocation.objects.filter(organization=organization, invoice__organization=organization,
-                                        transaction__organization=organization, transaction__date__range=(start, observation_end))
-    total_cash = attributed_cash = ZERO
-    for allocation in receipts:
-        total_cash += allocation.amount
-        lead = linked.get(allocation.invoice_id)
-        if lead is not None:
-            attributed_cash += allocation.amount
-        if cash_available and lead is not None and lead.pk in selected_ids:
-            item = row(lead)
-            for bucket in (summary, item):
-                bucket["cash"] += allocation.amount
-                # An absent report is not evidence that this campaign incurred zero spend.
-                bucket["cash_campaign_ids"].add(lead.campaign_id)
-            effective_product = _lead_value(lead, "product")
-            product_mapping_complete = bool(effective_product and lead.campaign_id and lead.campaign.product_id == effective_product)
-            if not product_mapping_complete:
-                if "product" in filters:
-                    summary["product_mapping_complete"] = False
-                if group_by == "product" or "product" in filters:
-                    item["product_mapping_complete"] = False
-
-    ads = AdDailyObservation.objects.filter(organization=organization, campaign__organization=organization,
-                                           date__range=(start, observation_end)).select_related("campaign__product")
-    for key, value in filters.items():
-        lookup = {"campaign": "campaign_id", "channel": "campaign__channel", "product": "campaign__product_id", "ad": "ad_name"}.get(key)
-        if lookup:
-            ads = ads.filter(**{lookup: value})
-    if spend_available:
-        for observation in ads:
-            key, label = _ad_group(observation, group_by)
-            item = rows.setdefault(key, _bucket(label))
-            if group_by == "product" and not observation.campaign.product_id:
-                item["product_mapping_complete"] = False
-            for bucket in (summary, item):
-                bucket["ad_rows"] += 1
-                if observation.spend is not None:
-                    bucket["spend_values"].append(observation.spend)
-                    bucket["spend_campaign_ids"].add(observation.campaign_id)
-                if observation.impressions is not None:
-                    bucket["impressions_values"].append(observation.impressions)
-                if observation.clicks is not None:
-                    bucket["clicks_values"].append(observation.clicks)
-
-    result = _metrics(summary, paid_by_invoice, cutoff, spend_available=spend_available, cash_available=cash_available, applied_by_invoice=applied_by_invoice)
-    result_rows = [{"key": key, "label": bucket["label"], **_metrics(bucket, paid_by_invoice, cutoff, spend_available=spend_available, cash_available=cash_available, applied_by_invoice=applied_by_invoice)} for key, bucket in sorted(rows.items(), key=lambda item: item[1]["label"].casefold())]
-    candidates = Campaign.objects.filter(organization=organization).filter(
-        (Q(start_date__isnull=True) | Q(start_date__lte=observation_end)) &
-        (Q(end_date__isnull=True) | Q(end_date__gte=start)) |
-        Q(pk__in=[key for key in summary["cash_campaign_ids"] if key is not None]))
-    for key in ("campaign", "channel", "product"):
-        if key in filters:
-            candidates = candidates.filter(**{{"campaign": "pk", "channel": "channel", "product": "product_id"}[key]: filters[key]})
-    campaigns = list(candidates)
-    confirmed = confirmed_campaigns(organization=organization, campaigns=campaigns, start=start, end=observation_end)
-
-    def attach_coverage(metrics, bucket, required):
-        ids = set(required) | bucket["cash_campaign_ids"]
-        complete = spend_available and bool(ids) and all(confirmed.get(key, False) for key in ids)
-        metrics["source_period_complete"] = complete
-        metrics["source_coverage_basis"] = "user_confirmed_source_evidence" if complete else "unconfirmed"
-        metrics["source_coverage_note"] = (
-            "Cakupan sumber kampanye dalam lingkup ini dikonfirmasi pengguna; bukti dan total cocok dengan catatan yang diperiksa. Bukan verifikasi API atau bukti seluruh kegiatan perusahaan."
-            if complete else "Cakupan sumber periode belum dikonfirmasi untuk seluruh kampanye dalam lingkup ini, atau catatan berubah setelah pemeriksaan. Rasio hanya memakai biaya tercatat.")
-
-    attach_coverage(result, summary, [campaign.pk for campaign in campaigns])
-    for item in result_rows:
-        matched = [campaign.pk for campaign in campaigns if (
-            str(campaign.pk) == item["key"] if group_by == "campaign" else
-            str(campaign.product_id or "unknown") == item["key"] if group_by == "product" else
-            item["key"].startswith(f"{campaign.pk}:") if group_by == "ad" else
-            campaign.channel == item["key"] if group_by == "channel" else False)]
-        attach_coverage(item, rows[item["key"]], matched)
-    # Historical work queues require state history; do not show today's state as a historical zero.
-    if not start <= today <= end:
-        for item in [result, *result_rows]:
-            for key in ("overdue_followups", "unpaid_won_leads", "unpaid_won_amount"):
-                item[key] = None
-    if start > today:
-        for key in ("cash_in", "leads", "cohort_paid_leads", "cohort_cash_in", "cohort_applied_payments", "followed_up_leads"):
-            result[key] = None
-    return result, result_rows, {"total_customer_receipts": _number(total_cash), "attributed_receipts": _number(attributed_cash),
-                                "unattributed_receipts": _number(total_cash - attributed_cash),
-                                "attribution_percent": _percent(attributed_cash, total_cash),
-                                "spend_rows": summary["ad_rows"], "spend_known_rows": len(summary["spend_values"]),
-                                "scope": "Cakupan pengaitan kas seluruh organisasi pada periode ini; angka tabel mengikuti filter."}
 
 
 @transaction.atomic
 def marketing_snapshot(*, organization, start, end, group_by="channel", filters=None):
-    # Marketing and finance writers share this short tenant lock. Release before AI/network work.
     Organization.objects.select_for_update().get(pk=organization.pk)
     start, end, filters = _validate(start, end, group_by, filters)
     today = timezone.localdate(timezone=JAKARTA)
     previous_end = start - timedelta(days=1)
     comparison_span = min(end, today) - start if start <= today else end - start
     previous_start = previous_end - comparison_span
-    summary, rows, coverage = _period(organization, start, end, group_by, filters)
-    previous, _, _ = _period(organization, previous_start, previous_end, group_by, filters)
-    quality = [
-        "Kas adalah penerimaan pelanggan bruto yang teralokasi; refund, chargeback, dan uang muka sebelum invoice belum didukung. Kas bersih belum tersedia.",
-        "Konversi pembayaran memakai lead dalam periode dan pembayaran yang diterapkan ke invoice sampai akhir pengamatan, termasuk uang muka. Penerapan uang muka bukan kas masuk kedua; kas periode tetap berasal dari alokasi mutasi biasa.",
-        "Rasio kas/belanja periode adalah indikator operasional, bukan ROAS kausal atau ROAS cohort. Jangan menjumlahkan rasio antar baris.",
-        "Respons memakai lead dengan waktu respons tercatat; respons kosong tidak dianggap nol menit. Perbandingan anggota perlu mempertimbangkan kanal, segmen, beban, dan umur lead.",
-        "Cakupan pengaitan tidak menjamin seluruh mutasi bank atau pengeluaran perusahaan telah diimpor.",
-    ]
-    if Decimal(coverage["unattributed_receipts"]) > 0:
-        quality.append("Sebagian penerimaan belum terhubung dengan lead. Lengkapi pengaitan invoice sebelum menyimpulkan kontribusi marketing.")
-    if not summary["spend_complete"]:
-        quality.append(summary["spend_note"])
-    quality.append(summary["source_coverage_note"])
-    if any(not item["product_mapping_complete"] for item in rows) and PRODUCT_SPEND_NOTE not in quality:
-        quality.append(PRODUCT_SPEND_NOTE)
-    if any(not item["cash_cost_coverage_complete"] for item in rows) and COST_COVERAGE_NOTE not in quality:
-        quality.append(COST_COVERAGE_NOTE)
-    if group_by == "ad" or "ad" in filters:
-        quality.append(CASH_NOTE)
-    if end < timezone.localdate(timezone=JAKARTA):
-        quality.append("Follow-up terlambat hanya tersedia untuk kondisi hari ini; antrean historis belum direkonstruksi.")
-    if end > today:
-        quality.append(f"Data aktual hanya dihitung sampai {today.isoformat()}. Periode masa depan belum memiliki hasil; mutasi dan belanja bertanggal masa depan dikecualikan.")
-        if start <= today:
-            quality.append(f"Perbandingan menggunakan {comparison_span.days + 1} hari yang sudah teramati dan periode sebelumnya dengan panjang sama.")
-    quality.append("Sepakat membeli belum berarti lunas. Follow-up tetap memuat prospek sepakat dengan invoice yang belum lunas; piutang ini bukan penerimaan kas.")
-    legacy = {"reported_spend": None, "reported_value": None, "rows": 0,
-              "basis": "Rekap lama seluruh organisasi pada periode ini, tanpa filter dimensi; tidak digabungkan dengan kas atau belanja iklan rinci."}
-    from director.models import MarketingObservation
-    old = MarketingObservation.objects.filter(organization=organization, status="active", date__range=(start, end))
-    legacy.update(rows=old.count(), reported_spend=_number(old.aggregate(value=Sum("spend"))["value"]),
-                  reported_value=_number(old.aggregate(value=Sum("reported_value"))["value"]))
-    return {"organization_id": organization.pk, "as_of": timezone.now().isoformat(), "formula_version": "marketing-cash-v1",
-            "attribution_model": "Satu lead–satu invoice; 100% kanal sumber lead, bukan bukti sebab akibat.",
-            "period": {"start": start.isoformat(), "end": end.isoformat(), "previous_start": previous_start.isoformat(), "previous_end": previous_end.isoformat()},
-            "observation_end": min(end, today).isoformat(), "observed_through": min(end, today).isoformat(),
-            "group_by": group_by, "filters": filters, "dimension_choices": GROUP_BY_CHOICES,
-            "summary": summary, "previous_summary": previous, "rows": rows, "coverage": coverage,
-            "data_quality": quality, "legacy": legacy}
+    summary, rows, coverage, fingerprint = _period(
+        organization, start, end, group_by, filters
+    )
+    previous, _, _, _ = _period(
+        organization, previous_start, previous_end, group_by, filters
+    )
+    quality = _quality_notes(
+        QualityNotesContext(
+            summary=summary,
+            rows=rows,
+            coverage=coverage,
+            group_by=group_by,
+            filters=filters,
+            start=start,
+            end=end,
+            today=today,
+            comparison_span=comparison_span,
+        )
+    )
+    return {
+        "organization_id": organization.pk,
+        "as_of": timezone.now().isoformat(),
+        "formula_version": "marketing-performance-v6",
+        "attribution_model": "Kredit penjualan mengikuti sumber pertama yang dicatat pada prospek; kontak follow-up tidak memindahkan atribusi. Satu peluang–satu pesanan dengan beberapa invoice; tautan invoice lama tetap didukung. Setiap invoice dihitung sekali; kanal sumber bukan bukti sebab akibat. Kas bruto dan refund aktual ditampilkan terpisah sebelum kas setelah refund.",
+        "period": {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "previous_start": previous_start.isoformat(),
+            "previous_end": previous_end.isoformat(),
+        },
+        "observation_end": min(end, today).isoformat(),
+        "observed_through": min(end, today).isoformat(),
+        "group_by": group_by,
+        "filters": filters,
+        "dimension_choices": GROUP_BY_CHOICES,
+        "summary": summary,
+        "previous_summary": previous,
+        "rows": rows,
+        "coverage": coverage,
+        "data_quality": quality,
+        "legacy": _legacy_summary(organization, start, end),
+        "invoice_attribution_fingerprint": fingerprint,
+        "ad_sources": ad_source_state(
+            organization=organization, start=start, end=min(end, today), filters=filters
+        ),
+    }

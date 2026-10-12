@@ -1,0 +1,14 @@
+.onboarding-guide .panel-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.onboarding-guide .panel-body p {
+  margin: 0 0 12px;
+  line-height: 1.6;
+  max-width: 90ch;
+}
+.onboarding-guide .heading-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  max-width: none;
+}

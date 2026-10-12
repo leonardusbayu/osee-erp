@@ -7,7 +7,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
@@ -16,85 +15,227 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='AccessThrottle',
+            name="AccessThrottle",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('key', models.CharField(max_length=64, unique=True)),
-                ('window_start', models.DateTimeField()),
-                ('attempts', models.PositiveIntegerField(default=0)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("key", models.CharField(max_length=64, unique=True)),
+                ("window_start", models.DateTimeField()),
+                ("attempts", models.PositiveIntegerField(default=0)),
             ],
         ),
         migrations.CreateModel(
-            name='Organization',
+            name="Organization",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=200, verbose_name='Nama badan usaha')),
-                ('brand_name', models.CharField(default='OSEE', max_length=100, verbose_name='Nama usaha')),
-                ('legal_form', models.CharField(choices=[('ordinary_pt', 'PT non-perorangan')], default='ordinary_pt', max_length=30)),
-                ('vat_status', models.CharField(choices=[('non_pkp', 'Non-PKP'), ('pkp', 'PKP')], default='non_pkp', max_length=20)),
-                ('vat_effective_from', models.DateField(blank=True, null=True)),
-                ('fiscal_year_start_month', models.PositiveSmallIntegerField(default=1, validators=[django.core.validators.MinValueValidator(1), django.core.validators.MaxValueValidator(12)])),
-                ('is_demo', models.BooleanField(default=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "name",
+                    models.CharField(max_length=200, verbose_name="Nama badan usaha"),
+                ),
+                (
+                    "brand_name",
+                    models.CharField(
+                        default="OSEE", max_length=100, verbose_name="Nama usaha"
+                    ),
+                ),
+                (
+                    "legal_form",
+                    models.CharField(
+                        choices=[("ordinary_pt", "PT non-perorangan")],
+                        default="ordinary_pt",
+                        max_length=30,
+                    ),
+                ),
+                (
+                    "vat_status",
+                    models.CharField(
+                        choices=[("non_pkp", "Non-PKP"), ("pkp", "PKP")],
+                        default="non_pkp",
+                        max_length=20,
+                    ),
+                ),
+                ("vat_effective_from", models.DateField(blank=True, null=True)),
+                (
+                    "fiscal_year_start_month",
+                    models.PositiveSmallIntegerField(
+                        default=1,
+                        validators=[
+                            django.core.validators.MinValueValidator(1),
+                            django.core.validators.MaxValueValidator(12),
+                        ],
+                    ),
+                ),
+                ("is_demo", models.BooleanField(default=False)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
             ],
         ),
         migrations.CreateModel(
-            name='AuditEvent',
+            name="AuditEvent",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('action', models.CharField(max_length=120)),
-                ('object_type', models.CharField(default='', max_length=80)),
-                ('object_id', models.CharField(default='', max_length=80)),
-                ('detail', models.JSONField(default=dict)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('actor', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='core.organization')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("action", models.CharField(max_length=120)),
+                ("object_type", models.CharField(default="", max_length=80)),
+                ("object_id", models.CharField(default="", max_length=80)),
+                ("detail", models.JSONField(default=dict)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "actor",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "organization",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="core.organization",
+                    ),
+                ),
             ],
             options={
-                'ordering': ['-created_at', '-pk'],
+                "ordering": ["-created_at", "-pk"],
             },
         ),
         migrations.CreateModel(
-            name='Membership',
+            name="Membership",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('role', models.CharField(choices=[('owner', 'Pemilik'), ('finance', 'Staf keuangan'), ('reviewer', 'Peninjau pajak'), ('auditor', 'Pembaca laporan')], default='finance', max_length=20)),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to=settings.AUTH_USER_MODEL)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='core.organization')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "role",
+                    models.CharField(
+                        choices=[
+                            ("owner", "Pemilik"),
+                            ("finance", "Staf keuangan"),
+                            ("reviewer", "Peninjau pajak"),
+                            ("auditor", "Pembaca laporan"),
+                        ],
+                        default="finance",
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "organization",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="core.organization",
+                    ),
+                ),
             ],
             options={
-                'constraints': [models.UniqueConstraint(fields=('organization', 'user'), name='unique_membership')],
+                "constraints": [
+                    models.UniqueConstraint(
+                        fields=("organization", "user"), name="unique_membership"
+                    )
+                ],
             },
         ),
         migrations.CreateModel(
-            name='DomainEvent',
+            name="DomainEvent",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('topic', models.CharField(max_length=100)),
-                ('version', models.PositiveSmallIntegerField(default=1)),
-                ('aggregate_type', models.CharField(max_length=80)),
-                ('aggregate_id', models.CharField(max_length=80)),
-                ('payload', models.JSONField(default=dict)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('published_at', models.DateTimeField(blank=True, null=True)),
-                ('idempotency_key', models.CharField(max_length=200)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='core.organization')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("topic", models.CharField(max_length=100)),
+                ("version", models.PositiveSmallIntegerField(default=1)),
+                ("aggregate_type", models.CharField(max_length=80)),
+                ("aggregate_id", models.CharField(max_length=80)),
+                ("payload", models.JSONField(default=dict)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("published_at", models.DateTimeField(blank=True, null=True)),
+                ("idempotency_key", models.CharField(max_length=200)),
+                (
+                    "organization",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="core.organization",
+                    ),
+                ),
             ],
             options={
-                'constraints': [models.UniqueConstraint(fields=('organization', 'idempotency_key'), name='unique_domain_event')],
+                "constraints": [
+                    models.UniqueConstraint(
+                        fields=("organization", "idempotency_key"),
+                        name="unique_domain_event",
+                    )
+                ],
             },
         ),
         migrations.CreateModel(
-            name='DocumentCounter',
+            name="DocumentCounter",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('kind', models.CharField(max_length=20)),
-                ('year', models.PositiveSmallIntegerField()),
-                ('value', models.PositiveIntegerField(default=0)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='core.organization')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("kind", models.CharField(max_length=20)),
+                ("year", models.PositiveSmallIntegerField()),
+                ("value", models.PositiveIntegerField(default=0)),
+                (
+                    "organization",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="core.organization",
+                    ),
+                ),
             ],
             options={
-                'constraints': [models.UniqueConstraint(fields=('organization', 'kind', 'year'), name='unique_document_counter')],
+                "constraints": [
+                    models.UniqueConstraint(
+                        fields=("organization", "kind", "year"),
+                        name="unique_document_counter",
+                    )
+                ],
             },
         ),
     ]

@@ -1,0 +1,22 @@
+/* Keep supplier advance sources, previews and history within the staff page. */
+.supplier-advance-page { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.supplier-advance-page .page-heading > *,
+.supplier-advance-page .panel-heading > *,
+.supplier-advance-page .detail-layout > *,
+.supplier-advance-page .form-layout > *,
+.supplier-advance-page .panel { min-width: 0; max-width: 100%; }
+.supplier-advance-page .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; }
+.supplier-advance-page .data-table th,
+.supplier-advance-page .data-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.supplier-advance-page .data-table .num { white-space: nowrap; }
+.supplier-advance-page .compact-details,
+.supplier-advance-page .compact-details dt,
+.supplier-advance-page .compact-details dd { min-width: 0; }
+.supplier-advance-page input,
+.supplier-advance-page select,
+.supplier-advance-page textarea { min-width: 0; max-width: 100%; }
+@media (max-width: 600px) {
+  .supplier-advance-page .data-table .num { text-align: left; white-space: normal; }
+  .supplier-advance-page .compact-details > div { display: block; margin-bottom: 12px; }
+  .supplier-advance-page .compact-details dd { margin-top: 3px; }
+}

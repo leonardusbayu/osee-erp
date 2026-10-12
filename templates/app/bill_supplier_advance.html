@@ -1,0 +1,5 @@
+{% load finance_format %}<section class="panel spaced">
+  <div class="panel-heading"><div><h2>Sudah membayar sebelum tagihan?</h2><p>Gunakan uang muka pemasok yang sudah tercatat untuk tagihan ini. Pembayaran bank tidak dicatat ulang.</p></div></div>
+  <div class="panel-body"><a class="button button-secondary" href="{% url 'supplier_advances' %}?supplier={{ bill.supplier_id }}">Lihat uang muka pemasok ini</a>
+  {% if supplier_advance_history %}<ul class="spaced">{% for item in supplier_advance_history %}<li>{{ item.date|iddate }} · {% if item.reversal %}Penggunaan dibalik{% else %}Uang muka digunakan{% endif %} · {{ item.amount|money }}</li>{% endfor %}</ul>{% endif %}</div>
+</section>

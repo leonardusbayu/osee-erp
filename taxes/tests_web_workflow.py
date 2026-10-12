@@ -1,14 +1,16 @@
 import io
 from datetime import date
 from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, Client, override_settings
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from pypdf import PdfWriter
+
 from core.models import Membership, Organization
-from taxes.models import TaxProfile, TaxObligation, ExternalTaxReview
-from taxes.workflow import upload_evidence, prepare_obligation, prepare_annual_workpaper
+from taxes.models import ExternalTaxReview, TaxObligation, TaxProfile
+from taxes.workflow import prepare_annual_workpaper, prepare_obligation, upload_evidence
 
 
 @override_settings(OPENROUTER_API_KEY="")
@@ -25,10 +27,57 @@ class TaxWorkflowHTTPTests(TestCase):
         pdf = PdfWriter()
         pdf.add_blank_page(width=100, height=100)
         pdf.write(output)
-        self.evidence = upload_evidence(organization=self.org, actor=self.users["owner"], file=SimpleUploadedFile("synthetic.pdf", output.getvalue()))
+        self.evidence = upload_evidence(
+            organization=self.org,
+            actor=self.users["owner"],
+            file=SimpleUploadedFile("synthetic.pdf", output.getvalue()),
+        )
+
+    def pph23_context(self, *, invoice=None):
+        from taxes.tests_workflow import TaxReleaseWorkflowTests
+
+        helper = TaxReleaseWorkflowTests()
+        helper.org, helper.owner = self.org, self.users["owner"]
+        helper.evidence = lambda actor=None: self.evidence
+        return helper.pph23_context(
+            direction="receivable", tax_point_date=date(2026, 9, 10), invoice=invoice
+        )
+
+    def invoice(self, amount):
+        from finance import services
+        from finance.models import Party, Product
+
+        party = Party.objects.create(
+            organization=self.org, name="Synthetic HTTP customer", kind="customer"
+        )
+        product = Product.objects.create(
+            organization=self.org,
+            code="HTTP",
+            name="Synthetic HTTP ITP",
+            kind="itp",
+            default_price=amount,
+        )
+        invoice = services.create_invoice(
+            organization=self.org,
+            actor=self.users["owner"],
+            party=party,
+            product=product,
+            quantity=1,
+            date=date(2026, 9, 10),
+        )
+        return services.issue_invoice(
+            organization=self.org, actor=self.users["owner"], invoice=invoice
+        )
 
     def test_real_pages_render_without_creating_profile_or_approval_on_get(self):
-        for name in ("index", "annual", "evidence_upload", "profile_review", "obligation_new", "annual_prepare"):
+        for name in (
+            "index",
+            "annual",
+            "evidence_upload",
+            "profile_review",
+            "obligation_new",
+            "annual_prepare",
+        ):
             response = self.client.get(reverse("taxes:" + name))
             self.assertEqual(response.status_code, 200, name)
         self.assertEqual(TaxProfile.objects.count(), 0)
@@ -36,43 +85,109 @@ class TaxWorkflowHTTPTests(TestCase):
 
     def test_three_roles_separate_preparation_and_external_review_authorization(self):
         self.client.force_login(self.users["finance"])
-        self.assertEqual(self.client.get(reverse("taxes:obligation_new")).status_code, 200)
-        self.assertEqual(self.client.get(reverse("taxes:profile_review")).status_code, 403)
+        self.assertEqual(
+            self.client.get(reverse("taxes:obligation_new")).status_code, 200
+        )
+        self.assertEqual(
+            self.client.get(reverse("taxes:profile_review")).status_code, 403
+        )
         self.client.force_login(self.users["marketing"])
         self.assertEqual(self.client.get(reverse("taxes:index")).status_code, 403)
-        self.assertEqual(self.client.get(reverse("taxes:evidence_download", args=[self.evidence.pk])).status_code, 403)
+        self.assertEqual(
+            self.client.get(
+                reverse("taxes:evidence_download", args=[self.evidence.pk])
+            ).status_code,
+            403,
+        )
 
     def test_preparation_submission_computes_amount_and_detail_is_reviewable(self):
+        invoice = self.invoice(Decimal(1000025))
+        context = self.pph23_context(invoice=invoice)
         self.client.force_login(self.users["finance"])
-        response = self.client.post(reverse("taxes:obligation_new"), {"period": "2026-09", "rule_code": "pph23_service_2", "base": "1000025",
-            "direction": "receivable", "source_reference": "SYN-CUSTOMER", "rule_reference": "Reviewed synthetic service", "object_code": "24-104-99",
-            "evidence": self.evidence.pk, "note": "Synthetic documented classification"})
+        response = self.client.post(
+            reverse("taxes:obligation_new"),
+            {
+                "period": "2026-09",
+                "rule_code": "pph23_service_2",
+                "base": "1000025",
+                "direction": "receivable",
+                "source_reference": "SYN-CUSTOMER",
+                "rule_reference": "Reviewed synthetic service",
+                "object_code": "24-104-99",
+                "evidence": self.evidence.pk,
+                "note": "Synthetic documented classification",
+                "source_invoice": invoice.pk,
+                "recipient_identity": context["recipient_identity"].pk,
+                "tax_point_date": str(context["tax_point_date"]),
+                "tax_point_basis": context["tax_point_basis"],
+                "withholder_party": invoice.party_id,
+                "withholder_reference": context["withholder_reference"],
+                "withholder_name": context["withholder_name"],
+                "object_reason": context["object_decision"]["reason"],
+                "individual_21_26_excluded": "on",
+                "final_exempt_excluded": "on",
+            },
+        )
         self.assertEqual(response.status_code, 302)
         row = TaxObligation.objects.get()
-        self.assertEqual(row.amount, Decimal("20001"))
+        self.assertEqual(row.amount, Decimal(20001))
         self.assertEqual(row.status, "review")
-        self.assertContains(self.client.get(response.url), "Perhitungan yang dapat ditelusuri")
+        self.assertContains(
+            self.client.get(response.url), "Perhitungan yang dapat ditelusuri"
+        )
         csrf = Client(enforce_csrf_checks=True)
         csrf.force_login(self.users["owner"])
-        self.assertEqual(csrf.post(reverse("taxes:obligation_new"), {}).status_code, 403)
+        self.assertEqual(
+            csrf.post(reverse("taxes:obligation_new"), {}).status_code, 403
+        )
 
-    def test_annual_package_is_private_download_and_explicitly_not_official_schema(self):
-        row = prepare_annual_workpaper(organization=self.org, actor=self.users["owner"], year=2026,
-            positive_adjustments="0", negative_adjustments="0", loss_compensation="0", turnover="0",
-            regime_code="corporate_22", instalments="0", support_evidence=self.evidence, reconciliation_note="Synthetic unfinished fiscal bridge")
-        self.assertContains(self.client.get(reverse("taxes:annual_workpaper", args=[row.pk])), "Format resmi/XML DJP belum divalidasi")
+    def test_annual_package_is_private_download_and_explicitly_not_official_schema(
+        self,
+    ):
+        row = prepare_annual_workpaper(
+            organization=self.org,
+            actor=self.users["owner"],
+            year=2026,
+            positive_adjustments="0",
+            negative_adjustments="0",
+            loss_compensation="0",
+            turnover="0",
+            regime_code="corporate_22",
+            instalments="0",
+            support_evidence=self.evidence,
+            reconciliation_note="Synthetic unfinished fiscal bridge",
+        )
+        self.assertContains(
+            self.client.get(reverse("taxes:annual_workpaper", args=[row.pk])),
+            "Format resmi/XML DJP belum divalidasi",
+        )
         response = self.client.get(reverse("taxes:annual_export", args=[row.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/zip")
         self.assertIn("DRAF", response["Content-Disposition"])
 
     def test_profile_report_submission_records_scoped_professional_approval(self):
-        profile = TaxProfile.objects.create(organization=self.org, registration_date=date(2024, 1, 1), registration_evidence="Synthetic SKT",
-            vat_status_effective_from=date(2024, 1, 1), vat_status_evidence="Synthetic non-PKP evidence")
-        response = self.client.post(reverse("taxes:profile_review"), {"evidence": self.evidence.pk,
-            "professional_name": "Synthetic professional", "qualification_reference": "Synthetic engagement", "reviewed_on": "2026-09-09",
-            "statement": "Synthetic profile report", "report_confirmed": "on", "taxpayer_reference": "1234567890123456",
-            "regime": "normal", "effective_from": "2026-01-01"})
+        profile = TaxProfile.objects.create(
+            organization=self.org,
+            registration_date=date(2024, 1, 1),
+            registration_evidence="Synthetic SKT",
+            vat_status_effective_from=date(2024, 1, 1),
+            vat_status_evidence="Synthetic non-PKP evidence",
+        )
+        response = self.client.post(
+            reverse("taxes:profile_review"),
+            {
+                "evidence": self.evidence.pk,
+                "professional_name": "Synthetic professional",
+                "qualification_reference": "Synthetic engagement",
+                "reviewed_on": "2026-09-09",
+                "statement": "Synthetic profile report",
+                "report_confirmed": "on",
+                "taxpayer_reference": "1234567890123456",
+                "regime": "normal",
+                "effective_from": "2026-01-01",
+            },
+        )
         self.assertEqual(response.status_code, 302)
         profile.refresh_from_db()
         self.assertEqual(profile.regime, "normal")
@@ -80,14 +195,33 @@ class TaxWorkflowHTTPTests(TestCase):
         self.assertEqual(profile.reviewed_by, self.users["owner"])
 
     def test_model_validation_failure_is_a_form_error_and_rolls_back_report(self):
-        row = prepare_obligation(organization=self.org, actor=self.users["owner"], period="2026-09", rule_code="pph23_service_2",
-            base="1000000", direction="receivable", source_reference="Synthetic", rule_reference="Synthetic reviewed service",
-            object_code="24-104-99", source_evidence=self.evidence)
-        row.amount = Decimal("1")
+        row = prepare_obligation(
+            organization=self.org,
+            actor=self.users["owner"],
+            period="2026-09",
+            rule_code="pph23_service_2",
+            base="1000000",
+            direction="receivable",
+            source_reference="Synthetic",
+            rule_reference="Synthetic reviewed service",
+            object_code="24-104-99",
+            source_evidence=self.evidence,
+            **self.pph23_context(),
+        )
+        row.amount = Decimal(1)
         row.save()
-        response = self.client.post(reverse("taxes:obligation_review", args=[row.pk]), {"evidence": self.evidence.pk,
-            "professional_name": "Synthetic professional", "qualification_reference": "Synthetic engagement", "reviewed_on": "2026-09-09",
-            "statement": "Synthetic review", "report_confirmed": "on"})
+        count = ExternalTaxReview.objects.count()
+        response = self.client.post(
+            reverse("taxes:obligation_review", args=[row.pk]),
+            {
+                "evidence": self.evidence.pk,
+                "professional_name": "Synthetic professional",
+                "qualification_reference": "Synthetic engagement",
+                "reviewed_on": "2026-09-09",
+                "statement": "Synthetic review",
+                "report_confirmed": "on",
+            },
+        )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Nominal/tarif tidak sama")
-        self.assertFalse(ExternalTaxReview.objects.exists())
+        self.assertContains(response, "Tarif/nominal PPh 23")
+        self.assertEqual(ExternalTaxReview.objects.count(), count)

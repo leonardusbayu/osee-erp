@@ -1,0 +1,6 @@
+{% load finance_format %}
+{% if opening_refund_tax_candidates %}
+<section class="panel settings-section"><div class="panel-heading"><div><h2>Periksa pajak pengembalian uang</h2><p>Setiap pengembalian mempunyai laporan tersendiri. Laporan pembayaran asli tetap tersimpan.</p></div></div><div class="panel-body">
+{% for item in opening_refund_tax_candidates %}<article class="settings-section"><h3>Pengembalian uang · {{ item.date|iddate }}</h3><p>{{ item.reason }}</p><a class="button button-secondary button-small" href="{% url 'opening_refund_tax:review' item.refund_id %}">Periksa pajak pengembalian uang</a></article>{% endfor %}
+</div></section>
+{% endif %}

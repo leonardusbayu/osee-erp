@@ -1,4 +1,5 @@
 """Original supplier identity and request replay under real PostgreSQL locks."""
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from threading import Barrier
@@ -21,7 +22,9 @@ class ConcurrentSupplierIdentityTests(TransactionTestCase):
         self.org = Organization.objects.create(name="Synthetic concurrent bills")
         self.owner = get_user_model().objects.create_user("supplier-race-owner")
         Membership.objects.create(organization=self.org, user=self.owner, role="owner")
-        self.supplier = Party.objects.create(organization=self.org, name="Synthetic supplier", kind="supplier")
+        self.supplier = Party.objects.create(
+            organization=self.org, name="Synthetic supplier", kind="supplier"
+        )
 
     def race(self, keys):
         ready = Barrier(len(keys))
@@ -29,12 +32,21 @@ class ConcurrentSupplierIdentityTests(TransactionTestCase):
         def submit(key):
             close_old_connections()
             try:
-                self.assertTrue(connections["default"].settings_dict["NAME"].startswith("test_"))
+                self.assertTrue(
+                    connections["default"].settings_dict["NAME"].startswith("test_")
+                )
                 ready.wait(timeout=10)
                 try:
-                    result = f.create_bill(organization=self.org.pk, actor=self.owner, supplier=self.supplier.pk,
-                        amount="500000", date=date(2026, 1, 10), service_date=date(2026, 1, 10),
-                        supplier_reference="SOURCE-ORIGINAL", submission_key=key)
+                    result = f.create_bill(
+                        organization=self.org.pk,
+                        actor=self.owner,
+                        supplier=self.supplier.pk,
+                        amount="500000",
+                        date=date(2026, 1, 10),
+                        service_date=date(2026, 1, 10),
+                        supplier_reference="SOURCE-ORIGINAL",
+                        submission_key=key,
+                    )
                     return result.pk
                 except ValidationError:
                     return "rejected"
@@ -47,8 +59,12 @@ class ConcurrentSupplierIdentityTests(TransactionTestCase):
 
     def assert_one_document(self):
         self.assertEqual(Bill.objects.count(), 1)
-        self.assertEqual(AuditEvent.objects.filter(action="finance.bill.created").count(), 1)
-        self.assertEqual(DocumentCounter.objects.get(organization=self.org, kind="BILL").value, 1)
+        self.assertEqual(
+            AuditEvent.objects.filter(action="finance.bill.created").count(), 1
+        )
+        self.assertEqual(
+            DocumentCounter.objects.get(organization=self.org, kind="BILL").value, 1
+        )
         self.assertFalse(Journal.objects.exists())
 
     def test_identical_concurrent_submissions_return_one_shared_bill(self):

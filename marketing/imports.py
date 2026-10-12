@@ -1,4 +1,5 @@
 """Bounded, atomic ad-source import. No transformations into financial records."""
+
 import csv
 import io
 import re
@@ -9,9 +10,19 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from . import services
-from .models import AdDailyObservation, Campaign, ALL_ADS, ALL_AUDIENCES, ALL_REGIONS
+from .models import ALL_ADS, ALL_AUDIENCES, ALL_REGIONS, AdDailyObservation, Campaign
 
-CSV_COLUMNS = ("tanggal", "iklan", "audiens", "wilayah", "biaya", "tayangan", "klik", "sumber", "referensi")
+CSV_COLUMNS = (
+    "tanggal",
+    "iklan",
+    "audiens",
+    "wilayah",
+    "biaya",
+    "tayangan",
+    "klik",
+    "sumber",
+    "referensi",
+)
 MAX_BYTES = 1024 * 1024
 MAX_ROWS = 500
 
@@ -26,7 +37,9 @@ def _count(value, column):
     if not value:
         return None
     if not re.fullmatch(r"[0-9]{1,10}", value) or int(value) > 2147483647:
-        raise ValidationError(f"{column} harus bilangan bulat nonnegatif maksimal 2147483647.")
+        raise ValidationError(
+            f"{column} harus bilangan bulat nonnegatif maksimal 2147483647."
+        )
     return int(value)
 
 
@@ -42,7 +55,9 @@ def parse_ad_csv(content):
     reader = csv.reader(io.StringIO(decoded, newline=""), strict=True)
     try:
         if tuple(next(reader, ())) != CSV_COLUMNS:
-            raise ValidationError("Kolom tidak sesuai template. Unduh template iklan dan pertahankan urutan kolomnya.")
+            raise ValidationError(
+                "Kolom tidak sesuai template. Unduh template iklan dan pertahankan urutan kolomnya."
+            )
         rows = []
         for line, cells in enumerate(reader, 2):
             if not cells or all(not cell.strip() for cell in cells):
@@ -50,7 +65,9 @@ def parse_ad_csv(content):
             if len(rows) >= MAX_ROWS:
                 raise ValidationError("Maksimal 500 baris per impor.")
             if len(cells) != len(CSV_COLUMNS):
-                raise ValidationError(f"Baris {line}: jumlah kolom harus {len(CSV_COLUMNS)}.")
+                raise ValidationError(
+                    f"Baris {line}: jumlah kolom harus {len(CSV_COLUMNS)}."
+                )
             values = dict(zip(CSV_COLUMNS, (cell.strip() for cell in cells)))
             try:
                 if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", values["tanggal"]):
@@ -63,23 +80,37 @@ def parse_ad_csv(content):
                     raise ValidationError("tanggal harus dalam tahun 2000–2200.")
                 amount = values["biaya"]
                 if amount and not re.fullmatch(r"[0-9]{1,18}(?:\.[0-9]{1,2})?", amount):
-                    raise ValidationError("biaya harus angka tanpa pemisah ribuan, maksimal dua desimal; kosong berarti belum diketahui.")
+                    raise ValidationError(
+                        "biaya harus angka tanpa pemisah ribuan, maksimal dua desimal; kosong berarti belum diketahui."
+                    )
                 if not values["sumber"] or not values["referensi"]:
                     raise ValidationError("sumber dan referensi wajib diisi.")
-                rows.append({"date": day, "ad_name": values["iklan"] or ALL_ADS,
-                             "audience": values["audiens"] or ALL_AUDIENCES,
-                             "region": values["wilayah"] or ALL_REGIONS,
-                             "spend": Decimal(amount) if amount else None,
-                             "impressions": _count(values["tayangan"], "tayangan"),
-                             "clicks": _count(values["klik"], "klik"),
-                             "source": values["sumber"], "reference": values["referensi"]})
+                rows.append(
+                    {
+                        "date": day,
+                        "ad_name": values["iklan"] or ALL_ADS,
+                        "audience": values["audiens"] or ALL_AUDIENCES,
+                        "region": values["wilayah"] or ALL_REGIONS,
+                        "spend": Decimal(amount) if amount else None,
+                        "impressions": _count(values["tayangan"], "tayangan"),
+                        "clicks": _count(values["klik"], "klik"),
+                        "source": values["sumber"],
+                        "reference": values["referensi"],
+                    }
+                )
             except ValidationError as exc:
-                raise ValidationError(f"Baris {line}: {' '.join(exc.messages)}") from exc
+                raise ValidationError(
+                    f"Baris {line}: {' '.join(exc.messages)}"
+                ) from exc
         if not rows:
-            raise ValidationError("Template masih kosong. Tambahkan minimal satu baris laporan.")
+            raise ValidationError(
+                "Template masih kosong. Tambahkan minimal satu baris laporan."
+            )
         return rows
     except csv.Error:
-        raise ValidationError("Format CSV tidak valid. Gunakan pemisah koma dan kutip teks yang mengandung koma.") from None
+        raise ValidationError(
+            "Format CSV tidak valid. Gunakan pemisah koma dan kutip teks yang mengandung koma."
+        ) from None
 
 
 @transaction.atomic
@@ -89,11 +120,17 @@ def import_ad_csv(*, organization, actor, campaign, content):
     rows = parse_ad_csv(content)
     created = duplicates = 0
     for line, values in enumerate(rows, 2):
-        exists = AdDailyObservation.objects.filter(organization=org, reference=values["reference"]).exists()
+        exists = AdDailyObservation.objects.filter(
+            organization=org, reference=values["reference"], source_root__isnull=True
+        ).exists()
         try:
-            services.save_ad_observation(organization=org, actor=actor, campaign=selected, **values)
+            services.save_ad_observation(
+                organization=org, actor=actor, campaign=selected, **values
+            )
         except ValidationError as exc:
-            raise ValidationError(f"Baris {line}: {' '.join(exc.messages)} Seluruh impor dibatalkan; belum ada perubahan tersimpan.") from exc
+            raise ValidationError(
+                f"Baris {line}: {' '.join(exc.messages)} Seluruh impor dibatalkan; belum ada perubahan tersimpan."
+            ) from exc
         created += not exists
         duplicates += exists
     return {"created": created, "duplicates": duplicates, "rows": len(rows)}

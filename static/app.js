@@ -15,6 +15,21 @@ document.addEventListener('DOMContentLoaded', () => {
     form.addEventListener('submit', (event) => { if (!window.confirm(form.dataset.confirm)) event.preventDefault(); });
   });
 
+  // Errors and required inputs must remain reachable inside optional sections.
+  const reveal = (node) => {
+    for (let details = node.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
+  };
+  document.querySelectorAll('.field-error, .has-error, .errorlist').forEach(reveal);
+  document.addEventListener('invalid', (event) => reveal(event.target), true);
+  document.querySelectorAll('form input[required]:not([type=hidden]), form select[required], form textarea[required]').forEach((field) => {
+    const label = field.labels?.[0];
+    if (!label || label.querySelector('.required-marker') || label.textContent.includes('*') || label.textContent.includes('(wajib)')) return;
+    const marker = document.createElement('span');
+    marker.className = 'required-marker';
+    marker.textContent = ' (wajib)';
+    label.append(marker);
+  });
+
   const chat = document.querySelector('[data-tax-chat]');
   if (!chat) return;
   const form = chat.querySelector('[data-chat-form]');

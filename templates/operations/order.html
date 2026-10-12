@@ -1,0 +1,108 @@
+{% extends 'base.html' %}
+{% load finance_format %}
+{% block title %}{{ order.reference }}{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <a href="{% url 'operations:overview' %}" class="back-link">← Semua pesanan</a>
+    <h1>{{ order.reference }}</h1>
+    <p>{{ order.buyer.name }} · {{ order.buyer.get_kind_display }} · {{ order.date|iddate }}</p>
+  </div>
+  <a class="button button-primary" href="{% url 'operations:line_create' order.pk %}">Tambah produk / kelompok</a>
+</div>
+
+{% include 'operations/nav.html' %}
+
+<section class="panel">
+  <div class="panel-body">
+    <h2>Langkah berikutnya</h2>
+    <ol>
+      <li>Pastikan produk dan jumlah pesanan benar.</li>
+      <li>Tambahkan peserta. Untuk tes, buka nama peserta untuk memilih jadwal. Untuk kursus, atur pertemuan pada rincian produk.</li>
+      {% if can_view_financial_details %}
+        <li>Periksa invoice dan pembayaran sebelum layanan dimulai.</li>
+      {% else %}
+        <li>Finance menerbitkan invoice dan memeriksa pembayaran sebelum tes.</li>
+      {% endif %}
+      <li>Setelah tes atau pertemuan kursus, catat kehadiran dan bukti.</li>
+    </ol>
+    <p>Pembayaran dan kehadiran tidak otomatis menandakan seluruh layanan selesai atau membukukan pendapatan.</p>
+  </div>
+</section>
+
+<section class="panel spaced">
+  <div class="panel-heading"><h2>Rincian pesanan</h2></div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr><th>Produk</th><th>Jumlah</th><th>Status tagihan</th><th>Tindakan</th></tr>
+      </thead>
+      <tbody>
+        {% for line in lines %}
+          <tr>
+            <td>{{ line.product.name }}<small>{{ line.reference }}</small></td>
+            <td>{{ line.quantity }}</td>
+            <td>
+              {% if can_view_financial_details %}
+                {% if line.invoice %}
+                  <a href="{% url 'sale_detail' line.invoice_id %}">{{ line.invoice.number }}</a>
+                  <p>Sisa {{ line.invoice.outstanding_amount|money }}</p>
+                {% else %}
+                  Belum ditagih
+                {% endif %}
+              {% elif line.invoice %}
+                Invoice tercatat. Hubungi Finance untuk memastikan pembayaran.
+              {% else %}
+                Menunggu Finance menerbitkan invoice.
+              {% endif %}
+            </td>
+            <td>
+              <a href="{% url 'operations:registration_create' line.pk %}">Tambah peserta</a>
+              {% if line.product.kind == 'course' %}
+                · <a href="{% url 'operations:course_plan' line.pk %}">Jadwalkan pertemuan kursus</a>
+              {% endif %}
+              {% if can_view_financial_details and not line.invoice and line.quantity %}
+                · <a href="{% url 'operations:line_invoice' line.pk %}">Periksa &amp; terbitkan invoice</a>
+                · <a href="{% url 'operations:existing_invoice' line.pk %}">Gunakan invoice yang ada</a>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4">Tambahkan produk dan jumlah unit yang dipesan.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel spaced">
+  <div class="panel-heading"><h2>Peserta</h2><span>{{ registration_count }} tercatat · {{ completed_count }} selesai · {{ cancelled_count }} dibatalkan</span></div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Peserta</th><th>Produk</th><th>Sesi</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for reg in registrations %}
+          <tr>
+            <td><a href="{% url 'operations:registration' reg.pk %}">{{ reg.participant.name }}</a></td>
+            <td>{{ reg.line.product.name }}</td>
+            <td>{{ reg.session.reference|default:'Belum dijadwalkan' }}</td>
+            <td>{{ reg.get_status_display }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4">Belum ada peserta. Pilih Tambah peserta pada produk yang dipesan.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if can_view_financial_details %}
+  <details class="panel spaced">
+    <summary class="panel-heading"><strong>Hubungan dengan prospek Marketing</strong></summary>
+    <div class="panel-body">
+      <p>Prospek sumber: {% if order.lead %}<a href="{% url 'marketing:lead_detail' order.lead_id %}">{{ order.lead.reference }}</a>{% else %}Belum terhubung{% endif %}</p>
+      <a class="text-link" href="{% url 'operations:order_lead' order.pk %}">Hubungkan / koreksi prospek →</a>
+    </div>
+  </details>
+{% endif %}
+{% endblock %}

@@ -16,8 +16,9 @@ from pypdf import PdfWriter
 
 from core.models import AuditEvent, Membership, Organization
 from finance.models import Bill, Invoice, Party, Product
+
 from .forms import AttachmentForm
-from .models import Attachment, MAX_UPLOAD_BYTES
+from .models import MAX_UPLOAD_BYTES, Attachment
 from .services import attach_document
 
 
@@ -55,38 +56,80 @@ class PrivateEvidenceTests(TestCase):
         self.other = Organization.objects.create(name="Other company")
         self.owner = get_user_model().objects.create_user(username="evidence-owner")
         self.auditor = get_user_model().objects.create_user(username="evidence-auditor")
-        self.foreign_user = get_user_model().objects.create_user(username="evidence-foreign")
+        self.foreign_user = get_user_model().objects.create_user(
+            username="evidence-foreign"
+        )
         Membership.objects.create(organization=self.org, user=self.owner, role="owner")
-        Membership.objects.create(organization=self.org, user=self.auditor, role="auditor")
-        Membership.objects.create(organization=self.other, user=self.foreign_user, role="owner")
+        Membership.objects.create(
+            organization=self.org, user=self.auditor, role="auditor"
+        )
+        Membership.objects.create(
+            organization=self.other, user=self.foreign_user, role="owner"
+        )
         self.invoice = self.make_invoice(self.org, "INV-1")
         self.foreign_invoice = self.make_invoice(self.other, "INV-2")
-        supplier = Party.objects.create(organization=self.org, name="Supplier", kind="supplier")
-        self.bill = Bill.objects.create(organization=self.org, supplier=supplier, number="B-1",
-                                        amount=Decimal("444000"), date=DAY, service_date=DAY)
+        supplier = Party.objects.create(
+            organization=self.org, name="Supplier", kind="supplier"
+        )
+        self.bill = Bill.objects.create(
+            organization=self.org,
+            supplier=supplier,
+            number="B-1",
+            amount=Decimal(444000),
+            date=DAY,
+            service_date=DAY,
+        )
 
     def make_invoice(self, org, number):
         party = Party.objects.create(organization=org, name="Customer", kind="customer")
-        product = Product.objects.create(organization=org, code="ITP", name="ITP", kind="itp", default_price=Decimal("500000"))
-        return Invoice.objects.create(organization=org, party=party, product=product, number=number,
-                                      quantity=1, unit_price=Decimal("500000"), date=DAY, due_date=DAY, service_date=DAY)
+        product = Product.objects.create(
+            organization=org,
+            code="ITP",
+            name="ITP",
+            kind="itp",
+            default_price=Decimal(500000),
+        )
+        return Invoice.objects.create(
+            organization=org,
+            party=party,
+            product=product,
+            number=number,
+            quantity=1,
+            unit_price=Decimal(500000),
+            date=DAY,
+            due_date=DAY,
+            service_date=DAY,
+        )
 
     def attach(self, *, upload=None, **kwargs):
-        return attach_document(organization=self.org, actor=self.owner, invoice=self.invoice,
-                               upload=upload or SimpleUploadedFile("invoice.pdf", PDF), **kwargs)
+        return attach_document(
+            organization=self.org,
+            actor=self.owner,
+            invoice=self.invoice,
+            upload=upload or SimpleUploadedFile("invoice.pdf", PDF),
+            **kwargs,
+        )
 
     def files(self):
         return [path for path in Path(self.directory.name).rglob("*") if path.is_file()]
 
-    def test_duplicate_bytes_on_same_source_return_existing_without_duplicate_file(self):
+    def test_duplicate_bytes_on_same_source_return_existing_without_duplicate_file(
+        self,
+    ):
         first = self.attach()
         second = self.attach(upload=SimpleUploadedFile("different-name.pdf", PDF))
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(Attachment.objects.count(), 1)
         self.assertEqual(len(self.files()), 1)
-        self.assertEqual(AuditEvent.objects.filter(action="evidence.document.attached").count(), 1)
-        bill_attachment = attach_document(organization=self.org, actor=self.owner, bill=self.bill,
-                                          upload=SimpleUploadedFile("supplier.pdf", PDF))
+        self.assertEqual(
+            AuditEvent.objects.filter(action="evidence.document.attached").count(), 1
+        )
+        bill_attachment = attach_document(
+            organization=self.org,
+            actor=self.owner,
+            bill=self.bill,
+            upload=SimpleUploadedFile("supplier.pdf", PDF),
+        )
         self.assertNotEqual(first.pk, bill_attachment.pk)
         self.assertEqual(len(self.files()), 2)
 
@@ -94,23 +137,38 @@ class PrivateEvidenceTests(TestCase):
         upload = SimpleUploadedFile("..\\..\\supplier invoice.pdf", PDF)
         attached = self.attach(upload=upload)
         self.assertEqual(attached.original_name, "supplier_invoice.pdf")
-        self.assertRegex(attached.file.name, rf"\Aorganizations/{self.org.pk}/evidence/[a-f0-9]{{32}}\.pdf\Z")
+        self.assertRegex(
+            attached.file.name,
+            rf"\Aorganizations/{self.org.pk}/evidence/[a-f0-9]{{32}}\.pdf\Z",
+        )
         self.assertNotIn("supplier", attached.file.name)
         self.assertEqual(attached.size, len(PDF))
         self.assertEqual(len(attached.sha256), 64)
         self.assertEqual(attached.uploaded_by, self.owner)
-        self.assertTrue(Path(attached.file.path).resolve().is_relative_to(Path(self.directory.name).resolve()))
+        self.assertTrue(
+            Path(attached.file.path)
+            .resolve()
+            .is_relative_to(Path(self.directory.name).resolve())
+        )
         with self.assertRaises(NotImplementedError):
             _ = attached.file.url
 
     def test_invalid_extension_magic_and_actual_size_are_rejected(self):
-        cases = [("fake.pdf", b"not a PDF"), ("png.pdf", b"\x89PNG\r\n\x1a\n"),
-                 ("file.exe", PDF), ("empty.pdf", b"")]
+        cases = [
+            ("fake.pdf", b"not a PDF"),
+            ("png.pdf", b"\x89PNG\r\n\x1a\n"),
+            ("file.exe", PDF),
+            ("empty.pdf", b""),
+        ]
         for filename, data in cases:
             with self.subTest(filename=filename), self.assertRaises(ValidationError):
                 self.attach(upload=SimpleUploadedFile(filename, data))
-        oversized = SimpleUploadedFile("large.pdf", b"%PDF-" + b"x" * (MAX_UPLOAD_BYTES - 4))
-        oversized.size = 1  # The service must count the bytes rather than trust metadata.
+        oversized = SimpleUploadedFile(
+            "large.pdf", b"%PDF-" + b"x" * (MAX_UPLOAD_BYTES - 4)
+        )
+        oversized.size = (
+            1  # The service must count the bytes rather than trust metadata.
+        )
         with self.assertRaisesMessage(ValidationError, "10 MB"):
             self.attach(upload=oversized)
         self.assertFalse(Attachment.objects.exists())
@@ -122,12 +180,22 @@ class PrivateEvidenceTests(TestCase):
             ("receipt.jpeg", image_bytes("JPEG"), "image/jpeg"),
         ]:
             with self.subTest(name=name):
-                attached = self.attach(upload=SimpleUploadedFile(name, data, content_type="text/html"))
+                attached = self.attach(
+                    upload=SimpleUploadedFile(name, data, content_type="text/html")
+                )
                 self.assertEqual(attached.content_type, content_type)
 
     def test_source_scope_exactly_one_target_and_upload_role_are_enforced(self):
-        common = {"organization": self.org, "actor": self.owner, "upload": SimpleUploadedFile("a.pdf", PDF)}
-        for source in [{}, {"invoice": self.invoice, "bill": self.bill}, {"invoice": self.foreign_invoice}]:
+        common = {
+            "organization": self.org,
+            "actor": self.owner,
+            "upload": SimpleUploadedFile("a.pdf", PDF),
+        }
+        for source in [
+            {},
+            {"invoice": self.invoice, "bill": self.bill},
+            {"invoice": self.foreign_invoice},
+        ]:
             with self.subTest(source=source), self.assertRaises(ValidationError):
                 attach_document(**common, **source)
         with self.assertRaises(PermissionDenied):
@@ -139,9 +207,18 @@ class PrivateEvidenceTests(TestCase):
     def test_database_failure_cleans_only_new_file_and_keeps_existing_evidence(self):
         original = self.attach()
         original_path = Path(original.file.path)
-        with patch("evidence.services.record", side_effect=IntegrityError("simulated audit failure")):
-            with self.assertRaises(IntegrityError):
-                self.attach(upload=SimpleUploadedFile("new.pdf", pdf_bytes(title="Different evidence")))
+        with (
+            patch(
+                "evidence.services.record",
+                side_effect=IntegrityError("simulated audit failure"),
+            ),
+            self.assertRaises(IntegrityError),
+        ):
+            self.attach(
+                upload=SimpleUploadedFile(
+                    "new.pdf", pdf_bytes(title="Different evidence")
+                )
+            )
         self.assertEqual(Attachment.objects.count(), 1)
         self.assertEqual(self.files(), [original_path])
         self.assertEqual(original_path.read_bytes(), PDF)
@@ -167,10 +244,16 @@ class PrivateEvidenceTests(TestCase):
         self.client.force_login(self.owner)
         with connection.cursor() as cursor:
             # Simulate an invalid legacy/manual DB write that bypassed the model.
-            cursor.execute("UPDATE evidence_attachment SET invoice_id = %s WHERE id = %s", [self.foreign_invoice.pk, attached.pk])
+            cursor.execute(
+                "UPDATE evidence_attachment SET invoice_id = %s WHERE id = %s",
+                [self.foreign_invoice.pk, attached.pk],
+            )
         self.assertEqual(self.client.get(url).status_code, 404)
         with connection.cursor() as cursor:
-            cursor.execute("UPDATE evidence_attachment SET invoice_id = %s WHERE id = %s", [self.invoice.pk, attached.pk])
+            cursor.execute(
+                "UPDATE evidence_attachment SET invoice_id = %s WHERE id = %s",
+                [self.invoice.pk, attached.pk],
+            )
         Path(attached.file.path).unlink()
         self.assertEqual(self.client.get(url).status_code, 404)
 
@@ -191,13 +274,15 @@ class PrivateEvidenceTests(TestCase):
         self.assertEqual(self.files(), [])
 
     def test_spoofed_corrupt_active_and_encrypted_documents_are_rejected(self):
-        cases = [("fake.pdf", b"%PDF-not-a-document"),
-                 ("active.pdf", pdf_bytes(javascript=True)),
-                 ("secret.pdf", pdf_bytes(encrypted=True)),
-                 ("truncated.pdf", PDF[:100]),
-                 ("fake.png", b"\x89PNG\r\n\x1a\nfixture"),
-                 ("fake.jpg", b"\xff\xd8\xfffixture"),
-                 ("truncated.jpg", image_bytes("JPEG")[:-30])]
+        cases = [
+            ("fake.pdf", b"%PDF-not-a-document"),
+            ("active.pdf", pdf_bytes(javascript=True)),
+            ("secret.pdf", pdf_bytes(encrypted=True)),
+            ("truncated.pdf", PDF[:100]),
+            ("fake.png", b"\x89PNG\r\n\x1a\nfixture"),
+            ("fake.jpg", b"\xff\xd8\xfffixture"),
+            ("truncated.jpg", image_bytes("JPEG")[:-30]),
+        ]
         for name, data in cases:
             with self.subTest(name=name), self.assertRaises(ValidationError):
                 self.attach(upload=SimpleUploadedFile(name, data))

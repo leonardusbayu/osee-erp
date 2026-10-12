@@ -4,7 +4,7 @@
 {% block head %}<link rel="stylesheet" href="{% static 'imports.css' %}">{% endblock %}
 {% block content %}
 <div class="imports-workspace">
-  <a class="back-link" href="{% url 'imports_overview' %}">← Kembali ke Data 2026</a>
+  <a class="back-link" href="{% url 'imports_overview' %}">← Kembali ke Data 2026</a> · <a class="text-link" href="{% url 'import_exception_inbox' %}">Pemeriksaan sumber dan koreksi</a>
   <div class="page-heading">
     <div><div class="eyebrow">RINCIAN DARI DOKUMEN SUMBER</div><h1>{{ month.month_label }}<span class="heading-dot">.</span></h1><p>Periksa angka, saluran, dan tanggal tanpa mengubah isi sumber.</p></div>
     <div class="heading-actions"><span class="pill pill-amber">Belum dibukukan</span>{% if source_pdf_url %}<a class="button button-secondary" href="{{ source_pdf_url }}">{% include 'app/icons.html' with name='download' %}Unduh PDF sumber</a>{% endif %}</div>

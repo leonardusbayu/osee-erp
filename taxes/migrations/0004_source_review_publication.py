@@ -5,20 +5,33 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('taxes', '0003_tax_identity_knowledge_versions'),
+        ("taxes", "0003_tax_identity_knowledge_versions"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='TaxSourcePublication',
+            name="TaxSourcePublication",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('reviewer_name', models.CharField(max_length=200)),
-                ('review_reference', models.CharField(max_length=500)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('revision', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='taxes.taxsourcerevision')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("reviewer_name", models.CharField(max_length=200)),
+                ("review_reference", models.CharField(max_length=500)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "revision",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="taxes.taxsourcerevision",
+                    ),
+                ),
             ],
         ),
     ]

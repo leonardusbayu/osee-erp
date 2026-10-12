@@ -1,14 +1,13 @@
 import calendar
 import csv
-import io
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings as django_settings
 from django.contrib import messages
 from django.contrib.auth import login, update_session_auth_hash
 from django.contrib.auth.forms import PasswordChangeForm
-from django.contrib.auth.models import User
 from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
@@ -23,22 +22,55 @@ from django.views.decorators.http import require_POST
 
 from core.access import organization_required, require_role
 from core.audit import record
-from core.models import Organization, Membership, AuditEvent, DomainEvent, AccountSecurity
-from core.modules import MODULES
+from core.models import (
+    AccountSecurity,
+    AuditEvent,
+    DomainEvent,
+    Membership,
+    Organization,
+)
 from core.numbering import next_number
 from core.throttle import allow_attempt, allow_login_attempt, reset_login_attempts
-from core.workspaces import real_import_exists, pending_company
-from finance.models import Party, Product, PriceVersion, Invoice, Bill, BankAccount, BankTransaction, Allocation, JournalLine
-from finance import services
+from core.workspaces import pending_company, real_import_exists
 from evidence.forms import AttachmentForm
 from evidence.services import attach_document
+from finance import services
+from finance.models import (
+    Allocation,
+    BankAccount,
+    BankTransaction,
+    Bill,
+    Invoice,
+    JournalLine,
+    Party,
+    PriceVersion,
+    Product,
+)
+
 from .documents import invoice_pdf, monthly_report_pdf
-from .forms import SetupForm, InvoiceForm, DeliveryForm, PartyForm, ProductForm, PriceForm, BillForm, BankImportForm, BankAccountForm, OrganizationForm, RegistrationEvidenceForm, PriceReplacementForm, TeamMemberForm
+from .forms import (
+    BankAccountForm,
+    BankImportForm,
+    BankMatchAmountForm,
+    BillForm,
+    DeliveryForm,
+    InvoiceForm,
+    OrganizationForm,
+    PartyForm,
+    PriceForm,
+    PriceReplacementForm,
+    ProductForm,
+    RegistrationEvidenceForm,
+    SetupForm,
+    TeamMemberForm,
+)
 
 ZERO = Decimal("0.00")
 
+
 def _local_request(request):
     return request.META.get("REMOTE_ADDR") in {"127.0.0.1", "::1"}
+
 
 class FinanceLoginView(LoginView):
     template_name = "registration/login.html"
@@ -47,53 +79,128 @@ class FinanceLoginView(LoginView):
     def get_default_redirect_url(self):
         selected = self.request.session.get("organization_id")
         memberships = Membership.objects.filter(user=self.request.user)
-        member = memberships.filter(organization_id=selected).first() if selected else memberships.first()
+        member = (
+            memberships.filter(organization_id=selected).first()
+            if selected
+            else memberships.first()
+        )
         if member and member.role == "marketing":
-            return reverse("marketing:overview")
+            return reverse("marketing:daily")
+        if member and member.role == "operations":
+            return reverse("operations:overview")
         if member and member.role in {"owner", "director"}:
             return reverse("director:overview")
         return super().get_default_redirect_url()
 
+    def get_success_url(self):
+        destination = super().get_success_url()
+        member = Membership.objects.filter(user=self.request.user).first()
+        if member and member.role == "operations":
+            destination = self._operations_destination(destination)
+        return destination
+
+    @staticmethod
+    def _operations_destination(destination):
+        fallback = reverse("operations:overview")
+        if not destination:
+            return fallback
+        path = urlsplit(destination).path
+        allowed = {
+            reverse("modules"),
+            reverse("password_change"),
+            reverse("security_settings"),
+        }
+        if path in allowed or path == "/operations" or path.startswith("/operations/"):
+            return destination
+        return fallback
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["demo_enabled"] = django_settings.DEMO_MODE and _local_request(self.request) and not real_import_exists()
-        context["prepared_company"] = bool(_local_request(self.request) and pending_company())
+        context["demo_enabled"] = (
+            django_settings.DEMO_MODE
+            and _local_request(self.request)
+            and not real_import_exists()
+        )
+        context["prepared_company"] = bool(
+            _local_request(self.request) and pending_company()
+        )
         return context
 
     def post(self, request, *args, **kwargs):
-        if not allow_login_attempt(username=request.POST.get("username", ""), remote_addr=request.META.get("REMOTE_ADDR", "")):
-            return HttpResponse("Terlalu banyak percobaan masuk. Coba lagi dalam 15 menit.", status=429)
+        if not allow_login_attempt(
+            username=request.POST.get("username", ""),
+            remote_addr=request.META.get("REMOTE_ADDR", ""),
+        ):
+            return HttpResponse(
+                "Terlalu banyak percobaan masuk. Coba lagi dalam 15 menit.", status=429
+            )
         return super().post(request, *args, **kwargs)
 
     def form_valid(self, form):
         import time
+
         user = form.get_user()
         member = Membership.objects.filter(user=user).first()
         if not member:
-            form.add_error(None, "Akun ini tidak memiliki akses perusahaan yang aktif. Hubungi Owner/Direktur.")
+            form.add_error(
+                None,
+                "Akun ini tidak memiliki akses perusahaan yang aktif. Hubungi Owner/Direktur.",
+            )
             return self.form_invalid(form)
-        reset_login_attempts(username=user.get_username(), remote_addr=self.request.META.get("REMOTE_ADDR", ""))
+        reset_login_attempts(
+            username=user.get_username(),
+            remote_addr=self.request.META.get("REMOTE_ADDR", ""),
+        )
         security = AccountSecurity.objects.filter(user=user).first()
         if security and security.totp_enabled:
-            destination = self.get_redirect_url() or reverse("director:overview" if member.role in {"owner", "director"} else "marketing:overview" if member.role == "marketing" else "dashboard")
+            destination = self.get_redirect_url() or reverse(
+                "director:overview"
+                if member.role in {"owner", "director"}
+                else "marketing:daily"
+                if member.role == "marketing"
+                else "operations:overview"
+                if member.role == "operations"
+                else "dashboard"
+            )
+            if member.role == "operations":
+                destination = self._operations_destination(destination)
             self.request.session.cycle_key()
-            self.request.session["pending_login"] = {"user_id": user.pk, "at": time.time(), "auth_hash": user.get_session_auth_hash(), "next": destination}
+            self.request.session["pending_login"] = {
+                "user_id": user.pk,
+                "at": time.time(),
+                "auth_hash": user.get_session_auth_hash(),
+                "next": destination,
+            }
             return redirect("mfa_challenge")
         response = super().form_valid(form)
-        self.request.session["auth_security_version"] = security.session_version if security else 1
+        self.request.session["auth_security_version"] = (
+            security.session_version if security else 1
+        )
         return response
+
 
 @require_POST
 def demo_login(request):
-    if not django_settings.DEMO_MODE or not _local_request(request) or real_import_exists():
+    if (
+        not django_settings.DEMO_MODE
+        or not _local_request(request)
+        or real_import_exists()
+    ):
         raise Http404
-    member = Membership.objects.select_related("user", "organization").filter(organization__is_demo=True, user__username="osee_demo").first()
+    member = (
+        Membership.objects.select_related("user", "organization")
+        .filter(organization__is_demo=True, user__username="osee_demo")
+        .first()
+    )
     if not member:
-        messages.info(request, "Data contoh belum disiapkan. Jalankan penyiapan demo lokal.")
+        messages.info(
+            request, "Data contoh belum disiapkan. Jalankan penyiapan demo lokal."
+        )
         return redirect("login")
     login(request, member.user, backend="django.contrib.auth.backends.ModelBackend")
     request.session["organization_id"] = member.organization_id
     return redirect("dashboard")
+
 
 def setup(request):
     if not django_settings.LOCAL_SETUP_ENABLED or not _local_request(request):
@@ -109,31 +216,78 @@ def setup(request):
         if not allow_attempt(f"setup:{request.META.get('REMOTE_ADDR', '')}", limit=5):
             return HttpResponse("Coba penyiapan lagi nanti.", status=429)
         with transaction.atomic():
-            if Membership.objects.filter(organization__is_demo=False, role="owner").exists():
+            if Membership.objects.filter(
+                organization__is_demo=False, role="owner"
+            ).exists():
                 raise PermissionDenied("Workspace perusahaan sudah disiapkan.")
             user = form.save()
             if prepared:
-                org = Organization.objects.select_for_update().get(pk=prepared.pk, is_demo=False)
+                org = Organization.objects.select_for_update().get(
+                    pk=prepared.pk, is_demo=False
+                )
                 if Membership.objects.filter(organization=org).exists():
-                    raise PermissionDenied("Workspace perusahaan sudah memiliki pemilik.")
+                    raise PermissionDenied(
+                        "Workspace perusahaan sudah memiliki pemilik."
+                    )
             else:
-                org = Organization.objects.create(name=form.cleaned_data["company_name"], brand_name="OSEE")
+                org = Organization.objects.create(
+                    name=form.cleaned_data["company_name"], brand_name="OSEE"
+                )
             Membership.objects.create(organization=org, user=user, role="owner")
             _initial_products(org)
-            record(org, user, "organization.owner_activated" if prepared else "organization.created", obj=org)
+            record(
+                org,
+                user,
+                "organization.owner_activated" if prepared else "organization.created",
+                obj=org,
+            )
         login(request, user)
         request.session["organization_id"] = org.pk
         return redirect("dashboard")
-    return render(request, "app/form.html", {"form": form, "title": "Aktifkan akun pemilik" if prepared else "Siapkan workspace perusahaan", "description": "Data perusahaan sudah diimpor. Buat nama pengguna dan kata sandi pribadi untuk membukanya. Kata sandi disimpan oleh aplikasi, tidak perlu dikirim melalui chat." if prepared else "Buat akun pemilik untuk data perusahaan Anda. Workspace ini dimulai kosong, terpisah dari data contoh.", "action_label": "Aktifkan dan buka data perusahaan" if prepared else "Buat workspace", "cancel_url": reverse("login")})
+    return render(
+        request,
+        "app/form.html",
+        {
+            "form": form,
+            "title": "Aktifkan akun pemilik"
+            if prepared
+            else "Siapkan workspace perusahaan",
+            "description": "Data perusahaan sudah diimpor. Buat nama pengguna dan kata sandi pribadi untuk membukanya. Kata sandi disimpan oleh aplikasi, tidak perlu dikirim melalui chat."
+            if prepared
+            else "Buat akun pemilik untuk data perusahaan Anda. Workspace ini dimulai kosong, terpisah dari data contoh.",
+            "action_label": "Aktifkan dan buka data perusahaan"
+            if prepared
+            else "Buat workspace",
+            "cancel_url": reverse("login"),
+        },
+    )
+
 
 def _initial_products(org):
-    Product.objects.get_or_create(organization=org, code="ITP", defaults={"name": "TOEFL ITP Official", "kind": "itp", "default_price": ZERO})
-    Product.objects.get_or_create(organization=org, code="IBT", defaults={"name": "TOEFL iBT Official", "kind": "ibt", "default_price": ZERO})
-    Product.objects.get_or_create(organization=org, code="COURSE", defaults={"name": "English Course", "kind": "course", "default_price": ZERO})
+    Product.objects.get_or_create(
+        organization=org,
+        code="ITP",
+        defaults={"name": "TOEFL ITP Official", "kind": "itp", "default_price": ZERO},
+    )
+    Product.objects.get_or_create(
+        organization=org,
+        code="IBT",
+        defaults={"name": "TOEFL iBT Official", "kind": "ibt", "default_price": ZERO},
+    )
+    Product.objects.get_or_create(
+        organization=org,
+        code="COURSE",
+        defaults={"name": "English Course", "kind": "course", "default_price": ZERO},
+    )
+
 
 def _period(request):
     today = timezone.localdate()
-    value = request.GET.get("period") or request.POST.get("period") or today.strftime("%Y-%m")
+    value = (
+        request.GET.get("period")
+        or request.POST.get("period")
+        or today.strftime("%Y-%m")
+    )
     try:
         parsed = date.fromisoformat(value + "-01")
         if not 2000 <= parsed.year <= 2200:
@@ -142,23 +296,47 @@ def _period(request):
         raise ValidationError("Pilih periode dengan format YYYY-MM.")
     return parsed
 
+
 def _error(request, error):
     values = error.messages if isinstance(error, ValidationError) else [str(error)]
     for value in values[:6]:
         messages.error(request, value)
 
-def _form_page(request, form, title, description, cancel_name, active_nav, action_label="Simpan"):
-    return render(request, "app/form.html", {"form": form, "title": title, "description": description, "cancel_url": reverse(cancel_name), "active_nav": active_nav, "action_label": action_label})
+
+def _form_page(
+    request, form, title, description, cancel_name, active_nav, action_label="Simpan"
+):
+    return render(
+        request,
+        "app/form.html",
+        {
+            "form": form,
+            "title": title,
+            "description": description,
+            "cancel_url": reverse(cancel_name),
+            "active_nav": active_nav,
+            "action_label": action_label,
+        },
+    )
+
 
 def _form_error(form, exc):
     # Model/service errors may name fields absent from this particular form.
     form.add_error(None, ValidationError(exc.messages))
 
+
 @organization_required
 def dashboard(request):
     org = request.organization
-    if not org.is_demo and org.import_batches.exists() and not JournalLine.objects.filter(organization=org, journal__status="posted").exists():
+    if (
+        not org.is_demo
+        and org.import_batches.exists()
+        and not JournalLine.objects.filter(
+            organization=org, journal__status="posted"
+        ).exists()
+    ):
         from .import_views import overview_context
+
         context = overview_context(org, 2026)
         context["active_nav"] = "dashboard"
         return render(request, "imports/overview.html", context)
@@ -167,53 +345,218 @@ def dashboard(request):
     except ValidationError as exc:
         _error(request, exc)
         return redirect("dashboard")
-    summary = services.monthly_summary(organization=org, year=period.year, month=period.month)
-    balances = summary["balances"]
-    bank_lines = list(BankTransaction.objects.filter(organization=org, date__lte=summary["end"]))
-    unmatched = sum(1 for line in bank_lines if line.unallocated_amount != ZERO)
-    series = []
-    for offset in range(5, -1, -1):
-        month_number = period.year * 12 + period.month - 1 - offset
-        yr, mo = divmod(month_number, 12)
-        if yr < 2000:
-            continue
-        monthly = services.monthly_summary(organization=org, year=yr, month=mo + 1)
-        series.append({"label": date_format(date(yr, mo + 1, 1), "M"), "revenue": monthly["revenue"], "costs": monthly["expenses"]})
-    maximum = max([row[field] for row in series for field in ["revenue", "costs"]] + [Decimal("1")])
+    try:
+        from finance.opening_balances import opening_balance_close_facts
+
+        opening_facts = opening_balance_close_facts(
+            organization=org, cutoff=timezone.localdate()
+        )
+        if not opening_facts["current"]:
+            raise ValidationError("Sumber saldo lama belum dapat diperiksa.")
+        summary = services.monthly_summary(
+            organization=org, year=period.year, month=period.month
+        )
+        balances = summary["balances"]
+        bank_lines = list(
+            BankTransaction.objects.filter(organization=org, date__lte=summary["end"])
+        )
+        unmatched = sum(1 for line in bank_lines if line.unallocated_amount != ZERO)
+        series = []
+        for offset in range(5, -1, -1):
+            month_number = period.year * 12 + period.month - 1 - offset
+            yr, mo = divmod(month_number, 12)
+            if yr < 2000:
+                continue
+            month_start = date(yr, mo + 1, 1)
+            month_end = date(yr, mo + 1, calendar.monthrange(yr, mo + 1)[1])
+            movements = {"REVENUE": ZERO, "EXPENSE": ZERO}
+            chart_rows = (
+                JournalLine.objects.filter(
+                    organization=org,
+                    journal__organization=org,
+                    journal__status="posted",
+                    journal__date__range=(month_start, month_end),
+                    account__in=(
+                        JournalLine.Account.REVENUE,
+                        JournalLine.Account.EXPENSE,
+                    ),
+                )
+                .values("account")
+                .annotate(debit=Sum("debit"), credit=Sum("credit"))
+            )
+            for movement in chart_rows:
+                movements[movement["account"]] = movement["debit"] - movement["credit"]
+            series.append(
+                {
+                    "label": date_format(month_start, "M"),
+                    "revenue": -movements["REVENUE"],
+                    "costs": movements["EXPENSE"],
+                }
+            )
+    except ValidationError:
+        # A held source is unknown, even if its damaged journal still balances.
+        data = {
+            name: None
+            for name in (
+                "bank_balance",
+                "receivables",
+                "payables",
+                "revenue",
+                "costs",
+                "profit",
+                "unmatched_count",
+                "order_count",
+                "review_bills",
+            )
+        }
+        data.update(
+            books_held=True,
+            monthly_series=[],
+            recent_invoices=[],
+            partner_count=Party.objects.filter(
+                organization=org, kind="reseller"
+            ).count(),
+            period_label=date_format(period, "F Y"),
+            actions=[
+                {
+                    "title": "Owner: periksa sumber pembukuan",
+                    "detail": "Periksa dokumen dan riwayat piutang atau utang lama.",
+                    "url": reverse("opening_balances"),
+                    "level": "warning",
+                },
+                {
+                    "title": "Periksa mutasi bank asli",
+                    "detail": "Bukti bank tetap tersimpan. Status pencocokan belum dapat diperiksa.",
+                    "url": reverse("bank"),
+                    "level": "warning",
+                },
+            ],
+        )
+        return render(
+            request,
+            "app/dashboard.html",
+            {
+                "dashboard": data,
+                "active_nav": "dashboard",
+                "period": period.strftime("%Y-%m"),
+            },
+        )
+    maximum = max(
+        [row[field] for row in series for field in ["revenue", "costs"]] + [Decimal(1)]
+    )
     for row in series:
         row["height"] = max(0, int(row["revenue"] / maximum * 100))
         row["cost_height"] = max(0, int(row["costs"] / maximum * 100))
     draft_bills = Bill.objects.filter(organization=org, status="draft").count()
-    review_bills = Bill.objects.filter(organization=org).exclude(tax_status="reviewed").count()
+    review_bills = (
+        Bill.objects.filter(organization=org).exclude(tax_status="reviewed").count()
+    )
     actions = []
     if unmatched:
-        actions.append({"title": f"{unmatched} mutasi belum cocok", "detail": "Hubungkan uang masuk dengan invoice yang tepat.", "url": reverse("bank"), "level": "warning"})
+        actions.append(
+            {
+                "title": f"{unmatched} mutasi belum cocok",
+                "detail": "Hubungkan uang masuk dengan invoice yang tepat.",
+                "url": reverse("bank"),
+                "level": "warning",
+            }
+        )
     if draft_bills:
-        actions.append({"title": f"{draft_bills} tagihan menunggu pemeriksaan", "detail": "Periksa nilai dan tanggal sebelum masuk pembukuan.", "url": reverse("bills"), "level": "warning"})
+        actions.append(
+            {
+                "title": f"{draft_bills} tagihan menunggu pemeriksaan",
+                "detail": "Periksa nilai dan tanggal sebelum masuk pembukuan.",
+                "url": reverse("bills"),
+                "level": "warning",
+            }
+        )
     from taxes.services import profile_gates
+
     _, profile_issues = profile_gates(org, period)
     if profile_issues:
-        actions.append({"title": "Lengkapi profil pajak perusahaan", "detail": "Status PT dan non-PKP tersimpan; riwayat pajak masih perlu diperiksa.", "url": reverse("tax_workspace"), "level": "info"})
+        actions.append(
+            {
+                "title": "Lengkapi profil pajak perusahaan",
+                "detail": "Status PT dan non-PKP tersimpan; riwayat pajak masih perlu diperiksa.",
+                "url": reverse("tax_workspace"),
+                "level": "info",
+            }
+        )
     if review_bills > draft_bills:
-        actions.append({"title": f"{review_bills - draft_bills} tagihan perlu pemeriksaan pajak", "detail": "Pembukuan tersimpan; perlakuan pajak masih perlu ditentukan.", "url": reverse("tax_workspace"), "level": "warning"})
-    recent = list(Invoice.objects.filter(organization=org).select_related("party", "product").order_by("-date", "-pk")[:5])
+        actions.append(
+            {
+                "title": f"{review_bills - draft_bills} tagihan perlu pemeriksaan pajak",
+                "detail": "Pembukuan tersimpan; perlakuan pajak masih perlu ditentukan.",
+                "url": reverse("tax_workspace"),
+                "level": "warning",
+            }
+        )
+    recent = list(
+        Invoice.objects.filter(organization=org)
+        .select_related("party", "product")
+        .order_by("-date", "-pk")[:5]
+    )
     for invoice in recent:
         invoice.issue_date = invoice.date
-    data = {"bank_balance": sum((row.amount for row in bank_lines), ZERO), "receivables": balances["AR"], "payables": -balances["AP"], "revenue": summary["revenue"], "costs": summary["expenses"], "profit": summary["profit"], "unmatched_count": unmatched, "order_count": summary["invoice_count"], "partner_count": Party.objects.filter(organization=org, kind="reseller").count(), "monthly_series": series, "recent_invoices": recent, "actions": actions, "period_label": date_format(period, "F Y"), "review_bills": review_bills}
-    return render(request, "app/dashboard.html", {"dashboard": data, "active_nav": "dashboard", "period": period.strftime("%Y-%m")})
+    data = {
+        "bank_balance": sum((row.amount for row in bank_lines), ZERO),
+        "receivables": balances["AR"],
+        "payables": -balances["AP"],
+        "revenue": summary["revenue"],
+        "costs": summary["expenses"],
+        "profit": summary["profit"],
+        "unmatched_count": unmatched,
+        "order_count": summary["invoice_count"],
+        "partner_count": Party.objects.filter(
+            organization=org, kind="reseller"
+        ).count(),
+        "monthly_series": series,
+        "recent_invoices": recent,
+        "actions": actions,
+        "period_label": date_format(period, "F Y"),
+        "review_bills": review_bills,
+    }
+    return render(
+        request,
+        "app/dashboard.html",
+        {
+            "dashboard": data,
+            "active_nav": "dashboard",
+            "period": period.strftime("%Y-%m"),
+        },
+    )
+
 
 @organization_required
 def sales(request):
-    queryset = Invoice.objects.filter(organization=request.organization).select_related("party", "product").order_by("-date", "-pk")
+    queryset = (
+        Invoice.objects.filter(organization=request.organization)
+        .select_related("party", "product")
+        .order_by("-date", "-pk")
+    )
     query = request.GET.get("q", "").strip()[:100]
     if query:
-        queryset = queryset.filter(Q(number__icontains=query) | Q(party__name__icontains=query))
+        queryset = queryset.filter(
+            Q(number__icontains=query) | Q(party__name__icontains=query)
+        )
     status = request.GET.get("status", "")
     if status in {"draft", "issued", "delivered", "cancelled"}:
         queryset = queryset.filter(status=status)
     page = Paginator(queryset, 50).get_page(request.GET.get("page"))
     invoices = list(page.object_list)
-    return render(request, "app/sales.html", {"invoices": invoices, "page_obj": page, "q": query, "selected_status": status, "active_nav": "sales", "can_write": request.membership.role in {"owner", "finance"}})
+    return render(
+        request,
+        "app/sales.html",
+        {
+            "invoices": invoices,
+            "page_obj": page,
+            "q": query,
+            "selected_status": status,
+            "active_nav": "sales",
+            "can_write": request.membership.role in {"owner", "finance"},
+        },
+    )
+
 
 @organization_required
 def sale_create(request):
@@ -225,37 +568,96 @@ def sale_create(request):
                 data = dict(form.cleaned_data)
                 if data.get("unit_price") is None:
                     data.pop("unit_price", None)
-                data["number"] = next_number(request.organization, "INV", data["date"].year)
-                invoice = services.create_invoice(organization=request.organization, actor=request.user, **data)
-            messages.success(request, "Draf invoice tersimpan. Periksa lalu terbitkan untuk mencatat piutang.")
+                data["number"] = next_number(
+                    request.organization, "INV", data["date"].year
+                )
+                invoice = services.create_invoice(
+                    organization=request.organization, actor=request.user, **data
+                )
+            messages.success(
+                request,
+                "Draf invoice tersimpan. Periksa lalu terbitkan untuk mencatat piutang.",
+            )
             return redirect("sale_detail", pk=invoice.pk)
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Buat penjualan", "Harga tersimpan per pesanan. Pembayaran dan penyelesaian layanan dicatat terpisah.", "sales", "sales", "Simpan draf invoice")
+    return _form_page(
+        request,
+        form,
+        "Buat penjualan",
+        "Harga tersimpan per pesanan. Pembayaran dan penyelesaian layanan dicatat terpisah.",
+        "sales",
+        "sales",
+        "Simpan draf invoice",
+    )
+
 
 @organization_required
 def sale_detail(request, pk):
-    invoice = get_object_or_404(Invoice.objects.select_related("party", "product"), organization=request.organization, pk=pk)
+    invoice = get_object_or_404(
+        Invoice.objects.select_related("party", "product"),
+        organization=request.organization,
+        pk=pk,
+    )
     can_write = request.membership.role in {"owner", "finance"}
-    return render(request, "app/sale_detail.html", {"invoice": invoice, "allocations": Allocation.objects.filter(organization=request.organization, invoice=invoice).select_related("transaction"), "can_issue": can_write and invoice.status == "draft", "can_deliver": can_write and invoice.status == "issued", "active_nav": "sales", "attachments": invoice.attachments.filter(organization=request.organization), "attachment_form": AttachmentForm(), "attachment_url": reverse("sale_attachment", args=[pk])})
+    return render(
+        request,
+        "app/sale_detail.html",
+        {
+            "invoice": invoice,
+            "allocations": Allocation.objects.filter(
+                organization=request.organization, invoice=invoice
+            ).select_related("transaction"),
+            "can_issue": can_write and invoice.status == "draft",
+            "can_deliver": can_write and invoice.status == "issued",
+            "active_nav": "sales",
+            "attachments": invoice.attachments.filter(
+                organization=request.organization
+            ),
+            "attachment_form": AttachmentForm(),
+            "attachment_url": reverse("sale_attachment", args=[pk]),
+        },
+    )
+
 
 @organization_required
 def sale_pdf(request, pk):
-    invoice = get_object_or_404(Invoice.objects.select_related("organization", "party", "product"), organization=request.organization, pk=pk)
+    invoice = get_object_or_404(
+        Invoice.objects.select_related("organization", "party", "product"),
+        organization=request.organization,
+        pk=pk,
+    )
     content = invoice_pdf(invoice)
-    record(request.organization, request.user, "finance.invoice.exported", obj=invoice, detail={"format": "pdf"})
+    record(
+        request.organization,
+        request.user,
+        "finance.invoice.exported",
+        obj=invoice,
+        detail={"format": "pdf"},
+    )
     response = HttpResponse(content, content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="osee-invoice-{invoice.pk}.pdf"'
+    response["Content-Disposition"] = (
+        f'attachment; filename="osee-invoice-{invoice.pk}.pdf"'
+    )
     response["Cache-Control"] = "private, no-store"
     return response
+
 
 def _attach_source(request, source, target_name, source_key):
     require_role(request, "owner", "finance")
     form = AttachmentForm(request.POST, request.FILES)
     if form.is_valid():
         try:
-            attach_document(organization=request.organization, actor=request.user, upload=form.cleaned_data["file"], **{source_key: source})
-            messages.success(request, "Dokumen pendukung tersimpan privat. Berkas yang sama tidak digandakan.")
+            attach_document(
+                organization=request.organization,
+                actor=request.user,
+                upload=form.cleaned_data["file"],
+                **{source_key: source},
+            )
+            messages.success(
+                request,
+                "Dokumen pendukung tersimpan privat. Berkas yang sama tidak digandakan.",
+            )
         except ValidationError as exc:
             _error(request, exc)
     else:
@@ -264,11 +666,13 @@ def _attach_source(request, source, target_name, source_key):
                 messages.error(request, error)
     return redirect(target_name, pk=source.pk)
 
+
 @require_POST
 @organization_required
 def sale_attachment(request, pk):
     source = get_object_or_404(Invoice, organization=request.organization, pk=pk)
     return _attach_source(request, source, "sale_detail", "invoice")
+
 
 @require_POST
 @organization_required
@@ -276,11 +680,17 @@ def sale_issue(request, pk):
     require_role(request, "owner", "finance")
     invoice = get_object_or_404(Invoice, organization=request.organization, pk=pk)
     try:
-        services.issue_invoice(organization=request.organization, invoice=invoice, actor=request.user)
-        messages.success(request, "Invoice diterbitkan. Piutang dan kewajiban layanan sudah tercatat.")
+        services.issue_invoice(
+            organization=request.organization, invoice=invoice, actor=request.user
+        )
+        messages.success(
+            request,
+            "Invoice diterbitkan. Piutang dan kewajiban layanan sudah tercatat.",
+        )
     except ValidationError as exc:
         _error(request, exc)
     return redirect("sale_detail", pk=pk)
+
 
 @organization_required
 def sale_deliver(request, pk):
@@ -289,34 +699,123 @@ def sale_deliver(request, pk):
     form = DeliveryForm(request.POST if request.method == "POST" else None)
     if request.method == "POST" and form.is_valid():
         try:
-            services.record_delivery(organization=request.organization, invoice=invoice,
-                date=form.cleaned_data["date"], evidence=form.cleaned_data["evidence"], actor=request.user)
-            messages.success(request, "Seluruh layanan dikonfirmasi selesai pada tanggal aktual. Pendapatan tercatat satu kali.")
+            services.record_delivery(
+                organization=request.organization,
+                invoice=invoice,
+                date=form.cleaned_data["date"],
+                evidence=form.cleaned_data["evidence"],
+                actor=request.user,
+            )
+            messages.success(
+                request,
+                "Seluruh layanan dikonfirmasi selesai pada tanggal aktual. Pendapatan tercatat satu kali.",
+            )
             return redirect("sale_detail", pk=pk)
         except ValidationError as exc:
             _form_error(form, exc)
-    return render(request, "app/form.html", {"form": form, "title": "Catat layanan selesai",
-        "description": f"{invoice.number} — masukkan tanggal aktual dan bukti pelaksanaan. Tanggal jadwal tidak otomatis menjadi tanggal pengakuan pendapatan.",
-        "cancel_url": reverse("sale_detail", args=[pk]), "active_nav": "sales", "action_label": "Simpan penyelesaian aktual"})
+    return render(
+        request,
+        "app/form.html",
+        {
+            "form": form,
+            "title": "Catat layanan selesai",
+            "description": f"{invoice.number} — masukkan tanggal aktual dan bukti pelaksanaan. Tanggal jadwal tidak otomatis menjadi tanggal pengakuan pendapatan.",
+            "cancel_url": reverse("sale_detail", args=[pk]),
+            "active_nav": "sales",
+            "action_label": "Simpan penyelesaian aktual",
+        },
+    )
+
 
 @organization_required
 def bills(request):
-    queryset = Bill.objects.filter(organization=request.organization).select_related("supplier").order_by("-date", "-pk")
+    queryset = (
+        Bill.objects.filter(organization=request.organization)
+        .select_related("supplier")
+        .order_by("-date", "-pk")
+    )
     page = Paginator(queryset, 50).get_page(request.GET.get("page"))
-    return render(request, "app/bills.html", {"bills": page.object_list, "page_obj": page, "active_nav": "bills", "can_write": request.membership.role in {"owner", "finance"}})
+    return render(
+        request,
+        "app/bills.html",
+        {
+            "bills": page.object_list,
+            "page_obj": page,
+            "active_nav": "bills",
+            "can_write": request.membership.role in {"owner", "finance"},
+        },
+    )
+
 
 @organization_required
 def bill_detail(request, pk):
-    bill = get_object_or_404(Bill.objects.select_related("supplier"), organization=request.organization, pk=pk)
+    bill = get_object_or_404(
+        Bill.objects.select_related("supplier"),
+        organization=request.organization,
+        supplier__organization=request.organization,
+        pk=pk,
+    )
     from imports.models import SourceDocument
-    import_sources = SourceDocument.objects.filter(organization=request.organization, batch__supplier_bill=bill, kind="supplier_invoice")
-    return render(request, "app/bill_detail.html", {"bill": bill, "active_nav": "bills", "attachments": bill.attachments.filter(organization=request.organization), "import_sources": import_sources, "attachment_form": AttachmentForm(), "attachment_url": reverse("bill_attachment", args=[pk])})
+
+    import_sources = SourceDocument.objects.filter(
+        organization=request.organization,
+        batch__supplier_bill=bill,
+        kind="supplier_invoice",
+    )
+    paid, outstanding, settlement_issues, supplier_history = (
+        bill.paid_amount,
+        bill.outstanding_amount,
+        [],
+        [],
+    )
+    if bill.supplier_advance_applications.exists():
+        from finance.budget_adapter import bill_budget_facts
+
+        try:
+            facts = bill_budget_facts(
+                organization=request.organization, bill=bill, as_of=timezone.localdate()
+            )
+            paid, outstanding = (
+                Decimal(facts["ap_settled"]),
+                Decimal(facts["ap_outstanding"]),
+            )
+            supplier_history = [
+                {
+                    "date": date.fromisoformat(row["date"]),
+                    "amount": abs(Decimal(row["ap_settled"])),
+                    "reversal": row["kind"] == "supplier_advance_reversal",
+                    "source_id": row["source_id"],
+                }
+                for row in facts["events"]
+                if row["kind"]
+                in ("supplier_advance_application", "supplier_advance_reversal")
+            ]
+        except ValidationError as exc:
+            paid, outstanding, settlement_issues = None, None, exc.messages
+    return render(
+        request,
+        "app/bill_detail.html",
+        {
+            "bill": bill,
+            "bill_paid": paid,
+            "bill_outstanding": outstanding,
+            "bill_settlement_issues": settlement_issues,
+            "supplier_advance_history": supplier_history,
+            "active_nav": "bills",
+            "attachments": bill.attachments.filter(organization=request.organization),
+            "import_sources": import_sources,
+            "attachment_form": AttachmentForm(),
+            "attachment_url": reverse("bill_attachment", args=[pk]),
+        },
+    )
+
 
 @require_POST
 @organization_required
 def bill_attachment(request, pk):
     source = get_object_or_404(Bill, organization=request.organization, pk=pk)
     return _attach_source(request, source, "bill_detail", "bill")
+
 
 @organization_required
 def bill_create(request):
@@ -326,12 +825,26 @@ def bill_create(request):
         try:
             with transaction.atomic():
                 data = dict(form.cleaned_data)
-                bill = services.create_bill(organization=request.organization, actor=request.user, **data)
-            messages.success(request, "Draf tagihan tersimpan. Pemeriksaan pajak tetap dilakukan terpisah.")
+                services.create_bill(
+                    organization=request.organization, actor=request.user, **data
+                )
+            messages.success(
+                request,
+                "Draf tagihan tersimpan. Pemeriksaan pajak tetap dilakukan terpisah.",
+            )
             return redirect("bills")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Catat tagihan supplier", "Masukkan nilai sesuai dokumen supplier. Pajak yang tercantum tidak otomatis menjadi kredit pajak.", "bills", "bills", "Simpan tagihan")
+    return _form_page(
+        request,
+        form,
+        "Catat tagihan supplier",
+        "Masukkan nilai sesuai dokumen supplier. Pajak yang tercantum tidak otomatis menjadi kredit pajak.",
+        "bills",
+        "bills",
+        "Simpan tagihan",
+    )
+
 
 @require_POST
 @organization_required
@@ -339,70 +852,269 @@ def bill_approve(request, pk):
     require_role(request, "owner", "finance")
     bill = get_object_or_404(Bill, organization=request.organization, pk=pk)
     try:
-        services.approve_bill(organization=request.organization, bill=bill, actor=request.user)
-        messages.success(request, "Tagihan masuk pembukuan. Ini bukan persetujuan atau pelaksanaan transfer bank.")
+        services.approve_bill(
+            organization=request.organization, bill=bill, actor=request.user
+        )
+        messages.success(
+            request,
+            "Tagihan masuk pembukuan. Ini bukan persetujuan atau pelaksanaan transfer bank.",
+        )
     except ValidationError as exc:
         _error(request, exc)
     return redirect("bills")
 
+
 @organization_required
 def bank(request):
+    return _bank_page(request)
+
+
+def _bank_parameters(request):
+    """Only retain the bank list's own status/page, never a supplied return URL."""
+    params = {}
+    if request.GET.get("status") == "unmatched":
+        params["status"] = "unmatched"
+    page = request.GET.get("page", "")
+    if page.isascii() and page.isdecimal() and len(page) <= 9 and int(page) > 0:
+        params["page"] = str(int(page))
+    return params
+
+
+def _bank_page(request, *, failed_line=None, errors=None, failed_document=None):
     from .models import StatementImport
+
     org = request.organization
-    all_lines = BankTransaction.objects.filter(organization=org).select_related("account").order_by("-date", "-pk")
-    pending = services.pending_bank_transactions(organization=org)
-    filtered = all_lines.filter(pk__in=pending.values("pk")) if request.GET.get("status") == "unmatched" else all_lines
-    page = Paginator(filtered, 50).get_page(request.GET.get("page"))
+    params = _bank_parameters(request)
+    all_lines = (
+        BankTransaction.objects.filter(organization=org)
+        .select_related("account")
+        .order_by("-date", "-pk")
+    )
+    source_held = False
+    try:
+        from finance.opening_balances import opening_balance_close_facts
+
+        opening_facts = opening_balance_close_facts(
+            organization=org, cutoff=timezone.localdate()
+        )
+        if not opening_facts["current"]:
+            raise ValidationError("Sumber saldo lama belum dapat diperiksa.")
+        pending = services.pending_bank_transactions(organization=org)
+        unmatched_count = pending.count()
+    except ValidationError:
+        pending, unmatched_count, source_held = None, None, True
+    filtered = (
+        all_lines.filter(pk__in=pending.values("pk"))
+        if pending is not None and params.get("status") == "unmatched"
+        else all_lines
+    )
+    page = Paginator(filtered, 50).get_page(params.get("page"))
     lines = list(page.object_list)
+    if failed_line and not any(line.pk == failed_line.pk for line in lines):
+        # Keep a failed row visible even if concurrent allocations changed its list page.
+        lines.insert(0, failed_line)
+    remaining, invoices, open_bills = {}, [], []
+    if not source_held:
+        try:
+            remaining = {line.pk: line.unallocated_amount for line in lines}
+            invoices = [
+                i
+                for i in Invoice.objects.filter(
+                    organization=org, status__in=["issued", "delivered"]
+                ).select_related("party")
+                if i.outstanding_amount > ZERO
+            ]
+            open_bills = [
+                bill
+                for bill in Bill.objects.filter(
+                    organization=org,
+                    status="approved",
+                    tax_status="reviewed",
+                    tax_amount=0,
+                ).select_related("supplier")
+                if bill.outstanding_amount > ZERO
+            ]
+        except ValidationError:
+            remaining, invoices, open_bills, unmatched_count, source_held = (
+                {},
+                [],
+                [],
+                None,
+                True,
+            )
     for line in lines:
-        line.status_label = "Sudah cocok" if line.unallocated_amount == ZERO else "Belum cocok"
-        line.can_match = line.amount > ZERO and line.unallocated_amount > ZERO and request.membership.role in {"owner", "finance"}
-        line.can_match_bill = line.amount < ZERO and line.unallocated_amount != ZERO and request.membership.role in {"owner", "finance"}
-    invoices = [i for i in Invoice.objects.filter(organization=org, status__in=["issued", "delivered"]).select_related("party") if i.outstanding_amount > ZERO]
-    open_bills = [bill for bill in Bill.objects.filter(organization=org, status="approved", tax_status="reviewed", tax_amount=0).select_related("supplier") if bill.outstanding_amount > ZERO]
-    return render(request, "app/bank.html", {"statements": StatementImport.objects.filter(organization=org).select_related("account").order_by("-created_at")[:20], "transactions": lines, "page_obj": page, "selected_status": request.GET.get("status", ""), "accounts": BankAccount.objects.filter(organization=org), "unmatched_count": pending.count(), "open_invoices": invoices, "open_bills": open_bills, "active_nav": "bank", "can_write": request.membership.role in {"owner", "finance"}, "bank_balance": BankTransaction.objects.filter(organization=org).aggregate(total=Sum("amount"))["total"] or ZERO})
+        line.remaining_amount = remaining.get(line.pk) if not source_held else None
+        line.safe_account_name = (
+            line.account.name
+            if line.account.organization_id == org.pk
+            else "Rekening perlu diperiksa Owner"
+        )
+        line.status_label = (
+            "Belum dapat diperiksa"
+            if line.remaining_amount is None
+            else "Sudah cocok"
+            if line.remaining_amount == ZERO
+            else "Belum cocok"
+        )
+        line.can_match = (
+            line.remaining_amount is not None
+            and line.amount > ZERO
+            and line.remaining_amount > ZERO
+            and request.membership.role in {"owner", "finance"}
+        )
+        line.can_match_bill = (
+            line.remaining_amount is not None
+            and line.amount < ZERO
+            and line.remaining_amount != ZERO
+            and request.membership.role in {"owner", "finance"}
+        )
+        if failed_line and line.pk == failed_line.pk:
+            line.match_errors = errors
+            line.match_amount = request.POST.get("amount", "")
+            line.match_invoice = request.POST.get("invoice", "")
+            line.match_bill = request.POST.get("bill", "")
+            if isinstance(failed_document, Invoice) and not any(
+                i.pk == failed_document.pk for i in invoices
+            ):
+                line.match_unavailable_invoice = failed_document
+            if isinstance(failed_document, Bill) and not any(
+                b.pk == failed_document.pk for b in open_bills
+            ):
+                line.match_unavailable_bill = failed_document
+    return render(
+        request,
+        "app/bank.html",
+        {
+            "statements": StatementImport.objects.filter(
+                organization=org, account__organization=org
+            )
+            .select_related("account")
+            .order_by("-created_at")[:20],
+            "transactions": lines,
+            "page_obj": page,
+            "selected_status": params.get("status", ""),
+            "bank_query": urlencode(params),
+            "accounts": BankAccount.objects.filter(organization=org),
+            "unmatched_count": unmatched_count,
+            "bank_source_held": source_held,
+            "open_invoices": invoices,
+            "open_bills": open_bills,
+            "active_nav": "bank",
+            "can_write": request.membership.role in {"owner", "finance"},
+            "bank_balance": BankTransaction.objects.filter(organization=org).aggregate(
+                total=Sum("amount")
+            )["total"]
+            or ZERO,
+        },
+    )
+
 
 @organization_required
 def bank_import(request):
     require_role(request, "owner", "finance")
-    form = BankImportForm(request.POST or None, request.FILES or None, organization=request.organization)
+    form = BankImportForm(
+        request.POST or None, request.FILES or None, organization=request.organization
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            result = services.import_bank_csv(organization=request.organization, account=form.cleaned_data["account"], content=form.cleaned_data["file"].read(), actor=request.user)
-            messages.success(request, f"{result['created']} mutasi baru diimpor; {result['duplicates']} baris sudah ada. Cocokkan dengan dokumen transaksi.")
+            result = services.import_bank_csv(
+                organization=request.organization,
+                account=form.cleaned_data["account"],
+                content=form.cleaned_data["file"].read(),
+                actor=request.user,
+            )
+            messages.success(
+                request,
+                f"{result['created']} mutasi baru diimpor; {result['duplicates']} baris sudah ada. Cocokkan dengan dokumen transaksi.",
+            )
             return redirect("bank")
         except (ValidationError, UnicodeDecodeError) as exc:
             if isinstance(exc, ValidationError):
                 _form_error(form, exc)
             else:
                 form.add_error(None, "CSV harus memakai encoding UTF-8.")
-    return _form_page(request, form, "Impor mutasi bank", "Impor file CSV terstruktur sambil menunggu aktivasi API BNIdirect. Referensi yang sama tidak dicatat dua kali.", "bank", "bank", "Periksa & impor CSV")
+    return _form_page(
+        request,
+        form,
+        "Impor mutasi bank",
+        "Impor file CSV terstruktur sambil menunggu aktivasi API BNIdirect. Referensi yang sama tidak dicatat dua kali.",
+        "bank",
+        "bank",
+        "Periksa & impor CSV",
+    )
+
 
 @require_POST
 @organization_required
 def bank_match(request, pk):
     require_role(request, "owner", "finance")
-    bank_line = get_object_or_404(BankTransaction, organization=request.organization, pk=pk)
+    bank_line = get_object_or_404(
+        BankTransaction, organization=request.organization, pk=pk
+    )
+    document = None
     try:
-        amount = Decimal(request.POST.get("amount", ""))
-        if not amount.is_finite():
-            raise InvalidOperation
+        amount_form = BankMatchAmountForm(request.POST)
+        if not amount_form.is_valid():
+            raise ValidationError(amount_form.errors["amount"])
+        amount = amount_form.cleaned_data["amount"]
         if bank_line.amount > 0:
-            invoice = get_object_or_404(Invoice, organization=request.organization, pk=request.POST.get("invoice") or 0)
-            services.reconcile_receipt(organization=request.organization, transaction=bank_line, invoice=invoice, amount=amount, actor=request.user)
+            if not request.POST.get("invoice"):
+                raise ValidationError("Pilih invoice tujuan.")
+            invoice = get_object_or_404(
+                Invoice,
+                organization=request.organization,
+                pk=request.POST.get("invoice"),
+            )
+            document = invoice
+            services.reconcile_receipt(
+                organization=request.organization,
+                transaction=bank_line,
+                invoice=invoice,
+                amount=amount,
+                actor=request.user,
+            )
         else:
-            bill = get_object_or_404(Bill, organization=request.organization, pk=request.POST.get("bill") or 0)
-            services.reconcile_bill_payment(organization=request.organization, transaction=bank_line, bill=bill, amount=amount, actor=request.user)
-        messages.success(request, "Alokasi tersimpan dan pembukuan diperbarui. Mutasi asli tetap tersimpan.")
+            if not request.POST.get("bill"):
+                raise ValidationError("Pilih tagihan tujuan.")
+            bill = get_object_or_404(
+                Bill, organization=request.organization, pk=request.POST.get("bill")
+            )
+            document = bill
+            services.reconcile_bill_payment(
+                organization=request.organization,
+                transaction=bank_line,
+                bill=bill,
+                amount=amount,
+                actor=request.user,
+            )
+        messages.success(
+            request,
+            "Alokasi tersimpan dan pembukuan diperbarui. Mutasi asli tetap tersimpan.",
+        )
     except (InvalidOperation, ValueError, ValidationError) as exc:
-        _error(request, exc if isinstance(exc, ValidationError) else ValidationError("Masukkan jumlah alokasi yang valid."))
-    return redirect("bank")
+        error = (
+            exc
+            if isinstance(exc, ValidationError)
+            else ValidationError("Masukkan jumlah alokasi yang valid.")
+        )
+        return _bank_page(
+            request,
+            failed_line=bank_line,
+            errors=error.messages,
+            failed_document=document,
+        )
+    query = urlencode(_bank_parameters(request))
+    return redirect(reverse("bank") + (f"?{query}" if query else ""))
+
 
 @organization_required
 def bank_template(request):
-    response = HttpResponse("date,reference,description,amount\n", content_type="text/csv; charset=utf-8")
+    response = HttpResponse(
+        "date,reference,description,amount\n", content_type="text/csv; charset=utf-8"
+    )
     response["Content-Disposition"] = 'attachment; filename="template-mutasi-osee.csv"'
     return response
+
 
 @organization_required
 def bank_account_create(request):
@@ -413,29 +1125,75 @@ def bank_account_create(request):
         obj.organization = request.organization
         try:
             obj.save()
-            record(request.organization, request.user, "finance.bank_account.created", obj=obj)
-            messages.success(request, "Rekening ditambahkan. Koneksi API belum diaktifkan.")
+            record(
+                request.organization,
+                request.user,
+                "finance.bank_account.created",
+                obj=obj,
+            )
+            messages.success(
+                request, "Rekening ditambahkan. Koneksi API belum diaktifkan."
+            )
             return redirect("bank")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Tambah rekening", "Rekening digunakan untuk mengelompokkan mutasi. Penambahan ini tidak memberi akses transfer.", "bank", "bank")
+    return _form_page(
+        request,
+        form,
+        "Tambah rekening",
+        "Rekening digunakan untuk mengelompokkan mutasi. Penambahan ini tidak memberi akses transfer.",
+        "bank",
+        "bank",
+    )
+
 
 @organization_required
 def partners(request):
     from imports.models import ImportBatch
+
     from .templatetags.finance_format import money
+
     observed = {}
     for batch in ImportBatch.objects.filter(organization=request.organization):
         for channel in batch.payload["channels"]:
-            row = observed.setdefault(channel["source_label"], {"name": channel["source_label"], "periods": set(), "counts": [], "prices_seen": set()})
+            row = observed.setdefault(
+                channel["source_label"],
+                {
+                    "name": channel["source_label"],
+                    "periods": set(),
+                    "counts": [],
+                    "prices_seen": set(),
+                },
+            )
             row["periods"].add(channel["month_id"])
             if channel["printed_count"] is not None:
                 row["counts"].append(channel["printed_count"])
             if channel["header_price"] is not None:
                 row["prices_seen"].add(channel["header_price"])
-    source_channels = [{"name": row["name"], "months": len(row["periods"]), "count": sum(row["counts"]) if row["counts"] else None,
-                        "prices": ", ".join(money(price) for price in sorted(row["prices_seen"]))} for row in sorted(observed.values(), key=lambda row: row["name"])]
-    return render(request, "app/partners.html", {"parties": Party.objects.filter(organization=request.organization).order_by("name"), "prices": PriceVersion.objects.filter(organization=request.organization).select_related("party", "product").order_by("-effective_from"), "source_channels": source_channels, "active_nav": "partners"})
+    source_channels = [
+        {
+            "name": row["name"],
+            "months": len(row["periods"]),
+            "count": sum(row["counts"]) if row["counts"] else None,
+            "prices": ", ".join(money(price) for price in sorted(row["prices_seen"])),
+        }
+        for row in sorted(observed.values(), key=lambda row: row["name"])
+    ]
+    return render(
+        request,
+        "app/partners.html",
+        {
+            "parties": Party.objects.filter(organization=request.organization).order_by(
+                "name"
+            ),
+            "prices": PriceVersion.objects.filter(organization=request.organization)
+            .select_related("party", "product")
+            .order_by("-effective_from"),
+            "source_channels": source_channels,
+            "active_nav": "partners",
+        },
+    )
+
 
 @organization_required
 def partner_create(request):
@@ -447,62 +1205,141 @@ def partner_create(request):
         try:
             obj.save()
             record(request.organization, request.user, "finance.party.created", obj=obj)
-            messages.success(request, "Kontak tersimpan. Harga khusus dapat ditambahkan di daftar harga.")
+            messages.success(
+                request,
+                "Kontak tersimpan. Harga khusus dapat ditambahkan di daftar harga.",
+            )
             return redirect("partners")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Tambah mitra atau kontak", "Mitra adalah reseller independen. Penjualan kembali mitra tidak menjadi omzet OSEE.", "partners", "partners")
+    return _form_page(
+        request,
+        form,
+        "Tambah mitra atau kontak",
+        "Mitra adalah reseller independen. Penjualan kembali mitra tidak menjadi omzet OSEE.",
+        "partners",
+        "partners",
+    )
+
 
 @organization_required
 def prices(request):
-    return render(request, "app/prices.html", {"prices": PriceVersion.objects.filter(organization=request.organization).select_related("party", "product").order_by("-effective_from", "-pk"), "products": Product.objects.filter(organization=request.organization), "active_nav": "partners"})
+    return render(
+        request,
+        "app/prices.html",
+        {
+            "prices": PriceVersion.objects.filter(organization=request.organization)
+            .select_related("party", "product")
+            .order_by("-effective_from", "-pk"),
+            "products": Product.objects.filter(organization=request.organization),
+            "active_nav": "partners",
+        },
+    )
+
 
 @organization_required
 def price_create(request):
-    require_role(request, "owner", "finance")
+    require_role(request, "owner")
     form = PriceForm(request.POST or None, organization=request.organization)
     if request.method == "POST" and form.is_valid():
         try:
-            obj = form.save()
-            record(request.organization, request.user, "finance.price.created", obj=obj)
-            messages.success(request, "Versi harga tersimpan. Invoice yang sudah diterbitkan tidak berubah.")
+            with transaction.atomic():
+                org = services._lock_org(request.organization)
+                services._owner(org, request.user)
+                obj = form.save()
+                record(org, request.user, "finance.price.created", obj=obj)
+            messages.success(
+                request,
+                "Versi harga tersimpan. Invoice yang sudah diterbitkan tidak berubah.",
+            )
             return redirect("prices")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Tambah versi harga", "Pisahkan harga jual mitra dan biaya supplier. Tetapkan masa berlaku agar perubahan harga dapat ditelusuri.", "prices", "partners")
+    return _form_page(
+        request,
+        form,
+        "Tambah versi harga",
+        "Pisahkan harga jual mitra dan biaya supplier. Tetapkan masa berlaku agar perubahan harga dapat ditelusuri.",
+        "prices",
+        "partners",
+    )
+
 
 @organization_required
 def price_replace(request, pk):
     require_role(request, "owner")
-    old = get_object_or_404(PriceVersion.objects.select_related("party", "product"), organization=request.organization, pk=pk)
+    old = get_object_or_404(
+        PriceVersion.objects.select_related("party", "product"),
+        organization=request.organization,
+        pk=pk,
+    )
     if not 2000 <= old.effective_from.year <= 2200:
-        messages.error(request, "Tanggal harga ini di luar rentang yang didukung. Perlu pemeriksaan data.")
+        messages.error(
+            request,
+            "Tanggal harga ini di luar rentang yang didukung. Perlu pemeriksaan data.",
+        )
         return redirect("prices")
-    form = PriceReplacementForm(request.POST or None, initial={"amount": old.amount, "effective_from": max(timezone.localdate(), old.effective_from + timedelta(days=1))})
+    form = PriceReplacementForm(
+        request.POST or None,
+        initial={
+            "amount": old.amount,
+            "effective_from": max(
+                timezone.localdate(), old.effective_from + timedelta(days=1)
+            ),
+        },
+    )
     if request.method == "POST" and form.is_valid():
         try:
-            services.replace_price_version(organization=request.organization, price_version=old, actor=request.user, **form.cleaned_data)
-            messages.success(request, "Versi harga baru aktif sesuai tanggal. Harga lama dan pesanan yang telah diterbitkan tetap dapat ditelusuri.")
+            services.replace_price_version(
+                organization=request.organization,
+                price_version=old,
+                actor=request.user,
+                **form.cleaned_data,
+            )
+            messages.success(
+                request,
+                "Versi harga baru aktif sesuai tanggal. Harga lama dan pesanan yang telah diterbitkan tetap dapat ditelusuri.",
+            )
             return redirect("prices")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Perbarui harga", f"{old.product.name} · {old.party.name if old.party else 'Harga umum'}. Versi lama diakhiri sehari sebelum versi baru berlaku.", "prices", "partners", "Simpan versi pengganti")
+    return _form_page(
+        request,
+        form,
+        "Perbarui harga",
+        f"{old.product.name} · {old.party.name if old.party else 'Harga umum'}. Versi lama diakhiri sehari sebelum versi baru berlaku.",
+        "prices",
+        "partners",
+        "Simpan versi pengganti",
+    )
+
 
 @organization_required
 def product_create(request):
-    require_role(request, "owner", "finance")
+    require_role(request, "owner")
     form = ProductForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         obj = form.save(commit=False)
         obj.organization = request.organization
         try:
-            obj.save()
-            record(request.organization, request.user, "finance.product.created", obj=obj)
+            with transaction.atomic():
+                org = services._lock_org(request.organization)
+                services._owner(org, request.user)
+                obj.save()
+                record(org, request.user, "finance.product.created", obj=obj)
             messages.success(request, "Produk tersimpan.")
             return redirect("prices")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Tambah produk", "Harga TOEFL ITP, iBT, dan kursus dikelola terpisah.", "prices", "partners")
+    return _form_page(
+        request,
+        form,
+        "Tambah produk",
+        "Harga TOEFL ITP, iBT, dan kursus dikelola terpisah.",
+        "prices",
+        "partners",
+    )
+
 
 @organization_required
 def reports(request):
@@ -511,17 +1348,83 @@ def reports(request):
     except ValidationError as exc:
         _error(request, exc)
         return redirect("reports")
-    summary = services.monthly_summary(organization=request.organization, year=period.year, month=period.month)
+    summary = services.monthly_summary(
+        organization=request.organization, year=period.year, month=period.month
+    )
     from taxes.services import profile_gates
+
     _, tax_gates = profile_gates(request.organization, period)
     summary["blockers"] += [gate["title"] for gate in tax_gates]
     if summary["end"] >= timezone.localdate():
         summary["blockers"].append("Penutupan tersedia setelah bulan ini berakhir.")
     labels = dict(JournalLine.Account.choices)
-    trial = [{"account": {"code": code, "name": labels[code]}, "debit": max(value, ZERO), "credit": max(-value, ZERO)} for code, value in summary["balances"].items()]
-    context = {"period_label": date_format(period, "F Y"), "revenue": summary["revenue"], "costs": summary["expenses"], "profit": summary["profit"], "receivables": summary["balances"]["AR"], "payables": -summary["balances"]["AP"], "trial_balance": trial, "exports": [{"label": "Neraca saldo CSV", "url": reverse("report_export") + f"?period={period:%Y-%m}&kind=trial"}, {"label": "Jurnal transaksi CSV", "url": reverse("report_export") + f"?period={period:%Y-%m}&kind=journal"}], "blockers": summary["blockers"], "closed": summary["closed"], "debit_total": sum((row["debit"] for row in trial), ZERO), "credit_total": sum((row["credit"] for row in trial), ZERO)}
-    context["exports"].insert(0, {"label": "Laporan bulanan PDF", "url": reverse("report_pdf") + f"?period={period:%Y-%m}"})
-    return render(request, "app/reports.html", {"reports": context, "period": period.strftime("%Y-%m"), "active_nav": "reports", "can_close": request.membership.role in {"owner", "reviewer"}})
+    trial = [
+        {
+            "account": {"code": code, "name": labels[code]},
+            "debit": max(value, ZERO),
+            "credit": max(-value, ZERO),
+        }
+        for code, value in summary["balances"].items()
+    ]
+    context = {
+        "period_label": date_format(period, "F Y"),
+        "revenue": summary["revenue"],
+        "costs": summary["expenses"],
+        "profit": summary["profit"],
+        "receivables": summary["balances"]["AR"],
+        "payables": -summary["balances"]["AP"],
+        "trial_balance": trial,
+        "exports": [
+            {
+                "label": "Neraca saldo CSV",
+                "url": reverse("report_export") + f"?period={period:%Y-%m}&kind=trial",
+            },
+            {
+                "label": "Jurnal transaksi CSV",
+                "url": reverse("report_export")
+                + f"?period={period:%Y-%m}&kind=journal",
+            },
+        ],
+        "blockers": summary["blockers"],
+        "closed": summary["closed"],
+        "debit_total": sum((row["debit"] for row in trial), ZERO),
+        "credit_total": sum((row["credit"] for row in trial), ZERO),
+    }
+    context["exports"].insert(
+        0,
+        {
+            "label": "Laporan bulanan PDF",
+            "url": reverse("report_pdf") + f"?period={period:%Y-%m}",
+        },
+    )
+    from finance.models import OpeningBalanceItem
+
+    if OpeningBalanceItem.objects.filter(
+        Q(organization=request.organization)
+        | Q(journal__organization=request.organization)
+        | Q(source_snapshot__organization_id=request.organization.pk)
+    ).exists():
+        from finance.opening_balances import opening_balance_close_facts
+
+        opening_date = min(summary["end"], timezone.localdate())
+        context["opening_balances"] = {
+            **opening_balance_close_facts(
+                organization=request.organization, cutoff=opening_date
+            ),
+            "date": opening_date,
+            "url": reverse("opening_balances") + f"?as_of={opening_date.isoformat()}",
+        }
+    return render(
+        request,
+        "app/reports.html",
+        {
+            "reports": context,
+            "period": period.strftime("%Y-%m"),
+            "active_nav": "reports",
+            "can_close": request.membership.role in {"owner", "reviewer"},
+        },
+    )
+
 
 @organization_required
 def report_pdf(request):
@@ -530,23 +1433,39 @@ def report_pdf(request):
     except ValidationError:
         return HttpResponse("Periode tidak valid.", status=400)
     org = request.organization
-    summary = services.monthly_summary(organization=org, year=period.year, month=period.month)
+    summary = services.monthly_summary(
+        organization=org, year=period.year, month=period.month
+    )
     from taxes.services import profile_gates
+
     _, gates = profile_gates(org, period)
     summary["organization_id"] = org.pk
     summary["tax_profile_gates"] = gates
     if summary["end"] >= timezone.localdate():
         summary["blockers"].append("Penutupan tersedia setelah bulan ini berakhir.")
     content = monthly_report_pdf(org, summary)
-    record(org, request.user, "finance.report.exported", detail={"format": "pdf", "period": period.strftime("%Y-%m")})
+    record(
+        org,
+        request.user,
+        "finance.report.exported",
+        detail={"format": "pdf", "period": period.strftime("%Y-%m")},
+    )
     response = HttpResponse(content, content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="osee-laporan-{period:%Y-%m}.pdf"'
+    response["Content-Disposition"] = (
+        f'attachment; filename="osee-laporan-{period:%Y-%m}.pdf"'
+    )
     response["Cache-Control"] = "private, no-store"
     return response
 
+
 def _safe_csv(value):
     value = str(value)
-    return "'" + value if value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")) else value
+    return (
+        "'" + value
+        if value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r"))
+        else value
+    )
+
 
 @organization_required
 def report_export(request):
@@ -558,39 +1477,89 @@ def report_export(request):
     if kind not in {"trial", "journal"}:
         return HttpResponse("Jenis laporan tidak valid.", status=400)
     org = request.organization
-    summary = services.monthly_summary(organization=org, year=period.year, month=period.month)
+    summary = services.monthly_summary(
+        organization=org, year=period.year, month=period.month
+    )
     response = HttpResponse(content_type="text/csv; charset=utf-8-sig")
-    response["Content-Disposition"] = f'attachment; filename="osee-{kind}-{period:%Y-%m}.csv"'
+    response["Content-Disposition"] = (
+        f'attachment; filename="osee-{kind}-{period:%Y-%m}.csv"'
+    )
     response.write("\ufeff")
     writer = csv.writer(response)
     if kind == "trial":
         writer.writerow(["Akun", "Nama", "Debit", "Kredit", "Status", "Periode"])
         labels = dict(JournalLine.Account.choices)
         for code, value in summary["balances"].items():
-            writer.writerow([code, labels[code], f"{max(value, ZERO):.2f}", f"{max(-value, ZERO):.2f}", "Ditutup" if summary["closed"] else "Draf komersial", period.strftime("%Y-%m")])
+            writer.writerow(
+                [
+                    code,
+                    labels[code],
+                    f"{max(value, ZERO):.2f}",
+                    f"{max(-value, ZERO):.2f}",
+                    "Ditutup" if summary["closed"] else "Draf komersial",
+                    period.strftime("%Y-%m"),
+                ]
+            )
     else:
-        writer.writerow(["Tanggal", "Referensi", "Keterangan", "Akun", "Debit", "Kredit"])
-        for line in JournalLine.objects.filter(organization=org, journal__status="posted", journal__date__range=(summary["start"], summary["end"])).select_related("journal").order_by("journal__date", "journal_id", "pk"):
-            writer.writerow([line.journal.date, _safe_csv(line.journal.source_key), _safe_csv(line.journal.description), line.account, f"{line.debit:.2f}", f"{line.credit:.2f}"])
-    record(org, request.user, "finance.report.exported", detail={"kind": kind, "period": period.strftime("%Y-%m")})
+        writer.writerow(
+            ["Tanggal", "Referensi", "Keterangan", "Akun", "Debit", "Kredit"]
+        )
+        for line in (
+            JournalLine.objects.filter(
+                organization=org,
+                journal__status="posted",
+                journal__date__range=(summary["start"], summary["end"]),
+            )
+            .select_related("journal")
+            .order_by("journal__date", "journal_id", "pk")
+        ):
+            writer.writerow(
+                [
+                    line.journal.date,
+                    _safe_csv(line.journal.source_key),
+                    _safe_csv(line.journal.description),
+                    line.account,
+                    f"{line.debit:.2f}",
+                    f"{line.credit:.2f}",
+                ]
+            )
+    record(
+        org,
+        request.user,
+        "finance.report.exported",
+        detail={"kind": kind, "period": period.strftime("%Y-%m")},
+    )
     return response
+
 
 @require_POST
 @organization_required
 def close_month(request):
     require_role(request, "owner", "reviewer")
     from taxes.services import profile_gates
+
     try:
         period = _period(request)
         # Commercial closing is available only after the tax profile/setup gates too.
         _, gates = profile_gates(request.organization, period)
         if gates:
-            raise ValidationError("Profil pajak masih membutuhkan pemeriksaan. Buka Pajak sebelum menutup bulan.")
-        services.close_month(organization=request.organization, year=period.year, month=period.month, actor=request.user)
-        messages.success(request, "Bulan ditutup. Transaksi baru tidak dapat diposting ke periode ini.")
+            raise ValidationError(
+                "Profil pajak masih membutuhkan pemeriksaan. Buka Pajak sebelum menutup bulan."
+            )
+        services.close_month(
+            organization=request.organization,
+            year=period.year,
+            month=period.month,
+            actor=request.user,
+        )
+        messages.success(
+            request,
+            "Bulan ditutup. Transaksi baru tidak dapat diposting ke periode ini.",
+        )
     except ValidationError as exc:
         _error(request, exc)
     return redirect("reports")
+
 
 @organization_required
 def settings_view(request):
@@ -603,8 +1572,30 @@ def settings_view(request):
             messages.success(request, "Informasi perusahaan disimpan.")
             return redirect("settings")
     from taxes.models import TaxProfile
+
     profile = TaxProfile.objects.filter(organization=request.organization).first()
-    return render(request, "app/settings.html", {"form": form, "profile": profile, "members": Membership.all_objects.filter(organization=request.organization).select_related("user"), "audit_events": AuditEvent.objects.filter(organization=request.organization).select_related("actor")[:15], "openrouter_configured": bool(django_settings.OPENROUTER_API_KEY and django_settings.OPENROUTER_MODEL and django_settings.OPENROUTER_PROVIDER), "active_nav": "settings", "can_write": request.membership.role == "owner"})
+    return render(
+        request,
+        "app/settings.html",
+        {
+            "form": form,
+            "profile": profile,
+            "members": Membership.all_objects.filter(
+                organization=request.organization
+            ).select_related("user"),
+            "audit_events": AuditEvent.objects.filter(
+                organization=request.organization
+            ).select_related("actor")[:15],
+            "openrouter_configured": bool(
+                django_settings.OPENROUTER_API_KEY
+                and django_settings.OPENROUTER_MODEL
+                and django_settings.OPENROUTER_PROVIDER
+            ),
+            "active_nav": "settings",
+            "can_write": request.membership.role == "owner",
+        },
+    )
+
 
 @organization_required
 def member_create(request):
@@ -613,16 +1604,41 @@ def member_create(request):
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
             user = form.save()
-            membership = Membership.objects.create(organization=request.organization, user=user, role=form.cleaned_data["role"])
-            record(request.organization, request.user, "organization.member.created", obj=membership, detail={"role": membership.role})
-        messages.success(request, "Akun tim dibuat. Bagikan akses melalui saluran internal Anda; sistem tidak mengirim email otomatis.")
+            membership = Membership.objects.create(
+                organization=request.organization,
+                user=user,
+                role=form.cleaned_data["role"],
+            )
+            record(
+                request.organization,
+                request.user,
+                "organization.member.created",
+                obj=membership,
+                detail={"role": membership.role},
+            )
+        messages.success(
+            request,
+            "Akun tim dibuat. Bagikan akses melalui saluran internal Anda; sistem tidak mengirim email otomatis.",
+        )
         return redirect("settings")
-    return _form_page(request, form, "Tambah anggota tim", "Pilih salah satu dari tiga peran tim OSEE. Setiap orang masuk dengan akun sendiri; hanya Owner/Direktur yang dapat membuat akun anggota.", "settings", "settings", "Buat akun")
+    return _form_page(
+        request,
+        form,
+        "Tambah anggota tim",
+        "Pilih salah satu dari tiga peran tim OSEE. Setiap orang masuk dengan akun sendiri; hanya Owner/Direktur yang dapat membuat akun anggota.",
+        "settings",
+        "settings",
+        "Buat akun",
+    )
+
 
 @organization_required
 def password_change(request):
     if request.organization.is_demo:
-        messages.info(request, "Akun demo tidak memakai kata sandi. Buat workspace perusahaan untuk akun pribadi.")
+        messages.info(
+            request,
+            "Akun demo tidak memakai kata sandi. Buat workspace perusahaan untuk akun pribadi.",
+        )
         return redirect("modules")
     form = PasswordChangeForm(request.user, request.POST or None)
     if request.method == "POST" and form.is_valid():
@@ -631,38 +1647,89 @@ def password_change(request):
         AccountSecurity.objects.filter(user=user).update(require_password_change=False)
         record(request.organization, request.user, "account.password_changed")
         messages.success(request, "Kata sandi diperbarui.")
-        return redirect("marketing:overview" if request.membership.role == "marketing" else "settings")
-    return _form_page(request, form, "Ganti kata sandi", "Gunakan kata sandi unik setidaknya 12 karakter. Jika akun baru dipulihkan, Anda wajib mengganti sandi sementara.", "modules" if request.membership.role == "marketing" else "settings", "settings", "Perbarui kata sandi")
+        return redirect(
+            "marketing:daily" if request.membership.role == "marketing" else "settings"
+        )
+    return _form_page(
+        request,
+        form,
+        "Ganti kata sandi",
+        "Gunakan kata sandi unik setidaknya 12 karakter. Jika akun baru dipulihkan, Anda wajib mengganti sandi sementara.",
+        "modules" if request.membership.role == "marketing" else "settings",
+        "settings",
+        "Perbarui kata sandi",
+    )
+
 
 @organization_required
 def tax_profile_setup(request):
     require_role(request, "owner", "finance")
     from taxes.models import TaxProfile
-    profile = TaxProfile.objects.filter(organization=request.organization).first() or TaxProfile(organization=request.organization)
-    initial = {key: getattr(profile, key) for key in RegistrationEvidenceForm.base_fields}
+
+    profile = TaxProfile.objects.filter(
+        organization=request.organization
+    ).first() or TaxProfile(organization=request.organization)
+    initial = {
+        key: getattr(profile, key) for key in RegistrationEvidenceForm.base_fields
+    }
     form = RegistrationEvidenceForm(request.POST or None, initial=initial)
     if request.method == "POST" and form.is_valid():
         try:
             with transaction.atomic():
                 Organization.objects.select_for_update().get(pk=request.organization.pk)
-                if not Membership.objects.filter(organization=request.organization, user=request.user, user__is_active=True, role__in=["owner", "finance"]).exists():
+                if not Membership.objects.filter(
+                    organization=request.organization,
+                    user=request.user,
+                    user__is_active=True,
+                    role__in=["owner", "finance"],
+                ).exists():
                     raise PermissionDenied
-                profile = TaxProfile.objects.select_for_update().filter(organization=request.organization).first() or TaxProfile(organization=request.organization)
+                profile = TaxProfile.objects.select_for_update().filter(
+                    organization=request.organization
+                ).first() or TaxProfile(organization=request.organization)
                 if profile.reviewed_at:
-                    raise ValidationError("Profil sudah diperiksa. Perubahan harus melalui peninjau pajak agar riwayat tidak tertimpa.")
+                    raise ValidationError(
+                        "Profil sudah diperiksa. Perubahan harus melalui peninjau pajak agar riwayat tidak tertimpa."
+                    )
                 for key, value in form.cleaned_data.items():
                     setattr(profile, key, value)
                 profile.save()
-                record(request.organization, request.user, "tax.profile.evidence_updated", obj=profile)
-            messages.success(request, "Informasi pendukung tersimpan. Tarif tetap menunggu pemeriksaan pajak.")
+                record(
+                    request.organization,
+                    request.user,
+                    "tax.profile.evidence_updated",
+                    obj=profile,
+                )
+            messages.success(
+                request,
+                "Informasi pendukung tersimpan. Tarif tetap menunggu pemeriksaan pajak.",
+            )
             return redirect("tax_workspace")
         except ValidationError as exc:
             _form_error(form, exc)
-    return _form_page(request, form, "Lengkapi informasi pajak", "Masukkan fakta dari dokumen yang Anda miliki. Penetapan aturan pajak dilakukan oleh peninjau yang berwenang.", "tax_workspace", "tax")
+    return _form_page(
+        request,
+        form,
+        "Lengkapi informasi pajak",
+        "Masukkan fakta dari dokumen yang Anda miliki. Penetapan aturan pajak dilakukan oleh peninjau yang berwenang.",
+        "tax_workspace",
+        "tax",
+    )
+
 
 @organization_required
 def modules(request):
-    return render(request, "app/modules.html", {"active_nav": "modules", "events_count": DomainEvent.objects.filter(organization=request.organization).count()})
+    return render(
+        request,
+        "app/modules.html",
+        {
+            "active_nav": "modules",
+            "events_count": DomainEvent.objects.filter(
+                organization=request.organization
+            ).count(),
+        },
+    )
+
 
 def health(request):
     return JsonResponse({"status": "ok"})

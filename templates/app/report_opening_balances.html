@@ -1,0 +1,19 @@
+{% load finance_format %}
+{% if reports.opening_balances %}
+<section class="panel">
+  <div class="panel-heading">
+    <div><h2>Saldo lama yang masih belum dibayar</h2><p>Per {{ reports.opening_balances.date|date:'d M Y' }}. Sudah termasuk dalam total piutang dan utang; bukan penjualan atau biaya baru.</p></div>
+    <a class="button button-secondary" href="{{ reports.opening_balances.url }}">Lihat pelanggan dan pemasok</a>
+  </div>
+  <div class="panel-body">
+    {% if reports.opening_balances.receivable == None or reports.opening_balances.payable == None %}
+    <p class="small">Saldo belum dapat dinilai. Periksa dokumen dan riwayat saldo lama sebelum menutup buku.</p>
+    {% else %}
+    <dl class="compact-details">
+      <div><dt>Piutang lama yang belum diterima</dt><dd>{{ reports.opening_balances.receivable|money }}</dd></div>
+      <div><dt>Utang lama yang belum dibayar</dt><dd>{{ reports.opening_balances.payable|money }}</dd></div>
+    </dl>
+    {% endif %}
+  </div>
+</section>
+{% endif %}

@@ -1,5 +1,7 @@
 from decimal import Decimal, InvalidOperation
+
 from django import template
+
 from webapp.templatetags.finance_format import money
 
 register = template.Library()

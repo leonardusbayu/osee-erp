@@ -1,0 +1,7 @@
+{% extends 'base.html' %}{% load finance_format %}{% block title %}Periksa invoice pesanan{% endblock %}{% block content %}
+<div class="page-heading"><div><a href="{% url 'operations:order' line.order_id %}">← Pesanan</a><h1>Periksa invoice pesanan</h1><p>Pastikan pemesan, jumlah, tanggal, dan harga benar sebelum menerbitkan tagihan.</p></div></div>
+<section class="panel"><div class="panel-body"><h2>{{ line.order.buyer.name }}</h2><p>{{ line.product.name }} · {{ line.quantity }} unit</p><ol><li>Isi tanggal invoice dan jatuh tempo.</li><li>Pilih <strong>Tampilkan ulang harga</strong> bila tanggal berubah.</li><li>Periksa jumlah dan harga, centang konfirmasi, lalu terbitkan.</li></ol></div></section>
+<section class="panel form-panel"><form method="post">{% csrf_token %}{{ form.as_p }}
+{% if quote %}<div class="notice"><strong>Harga per unit {{ quote.unit_price|money }}</strong><p>Total {{ quote.quantity }} unit: {{ quote.total|money }}. Tanggal invoice {{ quote.date }}.</p><p>Penerbitan mencatat piutang dan kewajiban layanan. Pendapatan diakui saat layanan selesai.</p></div>{% endif %}
+<button class="button" name="action" value="preview">Tampilkan ulang harga</button>{% if quote %}<button class="button button-primary" name="action" value="issue">Konfirmasi &amp; terbitkan</button>{% endif %}
+</form></section>{% endblock %}

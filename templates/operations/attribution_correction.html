@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% load static %}
+{% block title %}Koreksi hubungan invoice · {{ lead.name }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{% static 'marketing.css' %}"><link rel="stylesheet" href="{% static 'identity-recovery.css' %}">{% endblock %}
+{% block content %}<div class="marketing-workspace">
+<a class="back-link" href="{% url 'marketing:lead_detail' lead.pk %}">← {{ lead.name }}</a><div class="page-heading"><div><h1>Koreksi hubungan invoice</h1><p>Pelanggan dan produk tetap dipertahankan. Mengganti atau melepas hubungan tidak mengubah tagihan dan pembayaran.</p></div></div>
+{% if rechecked %}<div class="message" role="status">Data terbaru sudah diperiksa. Isian tetap tersedia; setujui sumber lama kembali sebelum menyimpan.</div>{% endif %}
+<section class="panel m-panel"><dl class="m-detail-list"><div><dt>Pelanggan</dt><dd>{{ lead.party|default:'Belum diketahui' }}</dd></div><div><dt>Produk</dt><dd>{{ lead.product|default:'Belum diketahui' }}</dd></div><div><dt>Invoice sekarang</dt><dd>{{ lead.invoice|default:'Belum terhubung' }}</dd></div></dl>{% include 'marketing/identity_source_review.html' %}
+{% for blocker in recovery.blockers %}<p class="field-help">{{ blocker }}</p>{% endfor %}
+<form method="post" novalidate>{% csrf_token %}{% if stale %}<div class="message message-error" role="alert">Data berubah setelah halaman dibuka. Masukan belum disimpan. Periksa data terbaru lalu setujui kembali.</div>{% endif %}{% include 'marketing/fields.html' %}<div class="form-actions"><a class="button button-secondary" href="{% url 'marketing:lead_detail' lead.pk %}">Kembali</a>{% if stale %}<button type="submit" name="review_action" value="recheck" class="button button-primary">Periksa data terbaru</button>{% else %}<button type="submit" class="button button-primary">Simpan hubungan invoice</button>{% endif %}</div></form>
+<p class="m-caption">Jika pelanggan atau produk dari invoice keliru, buka <a href="{% url 'marketing:invoice_identity_correction' lead.pk %}" class="text-link">Perbaiki pelanggan atau produk dari invoice →</a></p></section></div>{% endblock %}

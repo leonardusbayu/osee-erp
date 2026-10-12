@@ -1,0 +1,11 @@
+{% load finance_format director_format %}
+<dl class="m-detail-list">
+  <div><dt>Kampanye</dt><dd>{{ observation.campaign.name }}</dd></div>
+  <div><dt>Tanggal sumber</dt><dd>{{ observation.date|iddate }}</dd></div>
+  <div><dt>Iklan</dt><dd>{{ observation.ad_name }}</dd></div>
+  <div><dt>Audiens / wilayah</dt><dd>{{ observation.audience }} · {{ observation.region }}</dd></div>
+  <div><dt>Biaya dilaporkan</dt><dd>{{ observation.spend|director_money }}</dd></div>
+  <div><dt>Tayangan / klik</dt><dd>{{ observation.impressions|director_number }} / {{ observation.clicks|director_number }}</dd></div>
+  <div><dt>Sumber</dt><dd>{{ observation.source }}</dd></div>
+  <div><dt>Referensi dokumen</dt><dd>{{ observation.reference }}</dd></div>
+</dl>

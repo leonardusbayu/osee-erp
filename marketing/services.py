@@ -1,7 +1,8 @@
 """Audited marketing commands. Financial links are read-only references."""
+
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-import re
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
@@ -10,20 +11,76 @@ from django.utils import timezone
 from core.audit import record
 from core.models import Membership, Organization
 from finance.models import Invoice, Party, Product
-from .models import AdDailyObservation, Campaign, Lead, LeadStageEvent, MarketingAction, MarketingAIPolicy, TeamMember
 
+from .models import (
+    AdDailyObservation,
+    Campaign,
+    Lead,
+    LeadStageEvent,
+    MarketingAction,
+    MarketingAIPolicy,
+    TeamMember,
+)
 
 WRITERS = {"owner", "director", "finance", "marketing"}
 FINANCE_LINKERS = {"owner", "director", "finance"}
 MEMBER_FIELDS = {"name", "discipline", "team", "active"}
-CAMPAIGN_FIELDS = {"name", "channel", "product", "owner", "objective", "start_date", "end_date", "status"}
-AD_FIELDS = {"campaign", "date", "ad_name", "audience", "region", "spend", "impressions", "clicks", "source", "reference"}
-LEAD_FIELDS = {"reference", "name", "received_at", "campaign", "channel", "owner", "product", "party", "segment", "region", "stage", "first_response_at", "next_follow_up", "notes"}
+CAMPAIGN_FIELDS = {
+    "name",
+    "channel",
+    "product",
+    "owner",
+    "objective",
+    "start_date",
+    "end_date",
+    "status",
+}
+AD_FIELDS = {
+    "campaign",
+    "date",
+    "ad_name",
+    "audience",
+    "region",
+    "spend",
+    "impressions",
+    "clicks",
+    "source",
+    "reference",
+}
+LEAD_FIELDS = {
+    "reference",
+    "name",
+    "received_at",
+    "campaign",
+    "channel",
+    "owner",
+    "product",
+    "party",
+    "segment",
+    "region",
+    "stage",
+    "first_response_at",
+    "next_follow_up",
+    "notes",
+}
 LEAD_UPDATES = {"stage", "first_response_at", "next_follow_up", "notes"}
 ACTION_FIELDS = {"title", "evidence", "description", "owner", "due_date", "metric_key"}
-DATES = {"date", "start_date", "end_date", "next_follow_up", "due_date", "period_start", "period_end"}
+DATES = {
+    "date",
+    "start_date",
+    "end_date",
+    "next_follow_up",
+    "due_date",
+    "period_start",
+    "period_end",
+}
 TIMES = {"received_at", "first_response_at"}
-REFERENCES = {"owner": TeamMember, "campaign": Campaign, "product": Product, "party": Party}
+REFERENCES = {
+    "owner": TeamMember,
+    "campaign": Campaign,
+    "product": Product,
+    "party": Party,
+}
 
 
 def _org(organization, actor, roles=WRITERS):
@@ -34,7 +91,12 @@ def _org(organization, actor, roles=WRITERS):
         org = Organization.objects.select_for_update().get(pk=value)
     except Organization.DoesNotExist as exc:
         raise ValidationError("Perusahaan tidak ditemukan.") from exc
-    if not getattr(actor, "is_authenticated", False) or not Membership.objects.filter(organization=org, user=actor, user__is_active=True, role__in=roles).exists():
+    if (
+        not getattr(actor, "is_authenticated", False)
+        or not Membership.objects.filter(
+            organization=org, user=actor, user__is_active=True, role__in=roles
+        ).exists()
+    ):
         raise PermissionDenied("Akun aktif dengan peran yang sesuai diperlukan.")
     return org
 
@@ -46,7 +108,9 @@ def _scoped(model, value, org):
     try:
         return model.objects.select_for_update().get(organization=org, pk=value)
     except model.DoesNotExist as exc:
-        raise ValidationError("Catatan terkait tidak tersedia untuk perusahaan ini.") from exc
+        raise ValidationError(
+            "Catatan terkait tidak tersedia untuk perusahaan ini."
+        ) from exc
 
 
 def _decimal(value, places=2, limit="1000000000000000000"):
@@ -57,11 +121,18 @@ def _decimal(value, places=2, limit="1000000000000000000"):
             raise InvalidOperation
         number = Decimal(value)
         precision = Decimal(1).scaleb(-places)
-        if not number.is_finite() or number < 0 or number >= Decimal(limit) or number != number.quantize(precision):
+        if (
+            not number.is_finite()
+            or number < 0
+            or number >= Decimal(limit)
+            or number != number.quantize(precision)
+        ):
             raise InvalidOperation
         return number.quantize(precision)
     except (InvalidOperation, ValueError, TypeError) as exc:
-        raise ValidationError(f"Nilai harus angka nonnegatif dengan maksimal {places} desimal.") from exc
+        raise ValidationError(
+            f"Nilai harus angka nonnegatif dengan maksimal {places} desimal."
+        ) from exc
 
 
 def _fields(data, allowed, org):
@@ -70,7 +141,9 @@ def _fields(data, allowed, org):
     result = {}
     for key, value in data.items():
         if key in REFERENCES:
-            result[key] = None if value in (None, "") else _scoped(REFERENCES[key], value, org)
+            result[key] = (
+                None if value in (None, "") else _scoped(REFERENCES[key], value, org)
+            )
             if key == "owner" and result[key] is not None and not result[key].active:
                 raise ValidationError("Penanggung jawab harus anggota tim aktif.")
         elif key in DATES:
@@ -78,30 +151,51 @@ def _fields(data, allowed, org):
                 result[key] = None
                 continue
             try:
-                parsed = date.fromisoformat(value) if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) else value
-                if not isinstance(parsed, date) or isinstance(parsed, datetime) or not 2000 <= parsed.year <= 2200:
+                parsed = (
+                    date.fromisoformat(value)
+                    if isinstance(value, str)
+                    and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+                    else value
+                )
+                if (
+                    not isinstance(parsed, date)
+                    or isinstance(parsed, datetime)
+                    or not 2000 <= parsed.year <= 2200
+                ):
                     raise ValueError
                 result[key] = parsed
             except (TypeError, ValueError) as exc:
-                raise ValidationError("Tanggal harus YYYY-MM-DD, dalam tahun 2000–2200.") from exc
+                raise ValidationError(
+                    "Tanggal harus YYYY-MM-DD, dalam tahun 2000–2200."
+                ) from exc
         elif key in TIMES:
             if value in (None, "") and key == "first_response_at":
                 result[key] = None
                 continue
             try:
-                parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
-                if not isinstance(parsed, datetime) or timezone.is_naive(parsed) or not 2000 <= parsed.year <= 2200:
+                parsed = (
+                    datetime.fromisoformat(value) if isinstance(value, str) else value
+                )
+                if (
+                    not isinstance(parsed, datetime)
+                    or timezone.is_naive(parsed)
+                    or not 2000 <= parsed.year <= 2200
+                ):
                     raise ValueError
                 result[key] = parsed
             except (TypeError, ValueError) as exc:
-                raise ValidationError("Waktu harus valid dan menyertakan zona waktu.") from exc
+                raise ValidationError(
+                    "Waktu harus valid dan menyertakan zona waktu."
+                ) from exc
         elif key == "spend":
             result[key] = _decimal(value)
         elif key in {"impressions", "clicks"}:
             if value in (None, ""):
                 result[key] = None
             elif type(value) is not int or not 0 <= value <= 2147483647:
-                raise ValidationError("Jumlah harus bilangan bulat nonnegatif yang valid.")
+                raise ValidationError(
+                    "Jumlah harus bilangan bulat nonnegatif yang valid."
+                )
             else:
                 result[key] = value
         elif key == "active":
@@ -111,8 +205,12 @@ def _fields(data, allowed, org):
         else:
             if not isinstance(value, str) or "\x00" in value or len(value) > 4000:
                 raise ValidationError("Teks isian tidak valid atau terlalu panjang.")
-            if key not in {"notes", "evidence", "description", "outcome"} and any(ord(character) < 32 or ord(character) == 127 for character in value):
-                raise ValidationError("Nama, label, dan referensi harus berupa teks satu baris.")
+            if key not in {"notes", "evidence", "description", "outcome"} and any(
+                ord(character) < 32 or ord(character) == 127 for character in value
+            ):
+                raise ValidationError(
+                    "Nama, label, dan referensi harus berupa teks satu baris."
+                )
             result[key] = value.strip()
     return result
 
@@ -147,7 +245,11 @@ def _audit(org, actor, action, obj, **detail):
 @transaction.atomic
 def create_member(*, organization, actor, **fields):
     org = _org(organization, actor)
-    obj = _save(TeamMember(organization=org, created_by=actor, **_fields(fields, MEMBER_FIELDS, org)))
+    obj = _save(
+        TeamMember(
+            organization=org, created_by=actor, **_fields(fields, MEMBER_FIELDS, org)
+        )
+    )
     _audit(org, actor, "member.created", obj, values=_snapshot(obj, MEMBER_FIELDS))
     return obj
 
@@ -155,17 +257,35 @@ def create_member(*, organization, actor, **fields):
 @transaction.atomic
 def create_campaign(*, organization, actor, **fields):
     org = _org(organization, actor)
-    obj = _save(Campaign(organization=org, created_by=actor, **_fields(fields, CAMPAIGN_FIELDS, org)))
+    values = _fields(fields, CAMPAIGN_FIELDS, org)
+    if values.get("status") == "completed":
+        raise ValidationError(
+            "Buat kampanye aktif atau dijeda dahulu. Gunakan keputusan Selesaikan kampanye untuk mencatat tanggal akhir aktual dan alasan."
+        )
+    obj = _save(
+        Campaign(
+            organization=org,
+            created_by=actor,
+            current_owner=values.get("owner"),
+            **values,
+        )
+    )
     _audit(org, actor, "campaign.created", obj, values=_snapshot(obj, CAMPAIGN_FIELDS))
     return obj
 
 
 @transaction.atomic
-def save_ad_observation(*, organization, actor, observation=None, expected_version=None, reason="", **fields):
+def save_ad_observation(
+    *, organization, actor, observation=None, expected_version=None, reason="", **fields
+):
     org = _org(organization, actor)
     data = _fields(fields, AD_FIELDS, org)
     if observation is not None:
         obj = _scoped(AdDailyObservation, observation, org)
+        if obj.withdrawn_at:
+            raise ValidationError(
+                "Laporan sudah ditarik atau diganti. Buka versi aktif dari riwayat untuk memperbaiki angka."
+            )
         _version(obj, expected_version)
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
             raise ValidationError("Tuliskan alasan koreksi, maksimal 500 karakter.")
@@ -174,15 +294,30 @@ def save_ad_observation(*, organization, actor, observation=None, expected_versi
             setattr(obj, key, value)
         obj.version += 1
         _save(obj)
-        _audit(org, actor, "ad.corrected", obj, before=before, after=_snapshot(obj, AD_FIELDS), reason=reason.strip(), version=obj.version)
+        _audit(
+            org,
+            actor,
+            "ad.corrected",
+            obj,
+            before=before,
+            after=_snapshot(obj, AD_FIELDS),
+            reason=reason.strip(),
+            version=obj.version,
+        )
         return obj
     obj = AdDailyObservation(organization=org, created_by=actor, **data)
     if obj.campaign_id is None:
         raise ValidationError({"campaign": "Pilih kampanye untuk laporan iklan."})
-    existing = AdDailyObservation.objects.filter(organization=org, reference=obj.reference).first()
+    # A document identity belongs to its original row for the entire recovery
+    # chain. Reimporting that exact archived row never resurrects it.
+    existing = AdDailyObservation.objects.filter(
+        organization=org, reference=obj.reference, source_root__isnull=True
+    ).first()
     if existing:
         if _snapshot(existing, AD_FIELDS) != _snapshot(obj, AD_FIELDS):
-            raise ValidationError("Referensi laporan sudah mempunyai nilai berbeda. Gunakan koreksi dengan versi dan alasan.")
+            raise ValidationError(
+                "Referensi laporan sudah mempunyai nilai berbeda. Gunakan koreksi dengan versi dan alasan."
+            )
         return existing
     _save(obj)
     _audit(org, actor, "ad.created", obj, values=_snapshot(obj, AD_FIELDS))
@@ -190,37 +325,96 @@ def save_ad_observation(*, organization, actor, observation=None, expected_versi
 
 
 @transaction.atomic
-def confirm_source_coverage(*, organization, actor, campaign, period_start, period_end, declared_spend,
-                            source, reference, evidence, confirm_complete=False):
+def confirm_source_coverage(
+    *,
+    organization,
+    actor,
+    campaign,
+    period_start,
+    period_end,
+    declared_spend,
+    source,
+    reference,
+    evidence,
+    confirm_complete=False,
+):
     from .coverage import observation_state
     from .models import SourceCoverage
 
     org = _org(organization, actor)
     if confirm_complete is not True:
-        raise ValidationError("Konfirmasikan bahwa seluruh sumber kampanye pada interval ini telah diperiksa.")
-    fields = {"campaign": campaign, "period_start": period_start, "period_end": period_end,
-              "source": source, "reference": reference, "evidence": evidence}
+        raise ValidationError(
+            "Konfirmasikan bahwa seluruh sumber kampanye pada interval ini telah diperiksa."
+        )
+    fields = {
+        "campaign": campaign,
+        "period_start": period_start,
+        "period_end": period_end,
+        "source": source,
+        "reference": reference,
+        "evidence": evidence,
+    }
     data = _fields(fields, set(fields), org)
     start, end = data["period_start"], data["period_end"]
-    if not start or not end or start > end or (end - start).days > 366 or end > timezone.localdate():
-        raise ValidationError("Gunakan interval sumber hingga hari ini, maksimal 366 hari.")
+    if (
+        not start
+        or not end
+        or start > end
+        or (end - start).days > 366
+        or end > timezone.localdate()
+    ):
+        raise ValidationError(
+            "Gunakan interval sumber hingga hari ini, maksimal 366 hari."
+        )
     if not all(data[key] for key in ("source", "reference", "evidence")):
-        raise ValidationError("Sumber, referensi dokumen, dan uraian pemeriksaan wajib diisi.")
+        raise ValidationError(
+            "Sumber, referensi dokumen, dan uraian pemeriksaan wajib diisi."
+        )
     total = _decimal(declared_spend)
-    fingerprint, recorded = observation_state(organization=org, campaign=data["campaign"], start=start, end=end)
+    fingerprint, recorded = observation_state(
+        organization=org, campaign=data["campaign"], start=start, end=end
+    )
     if total is None or recorded is None or recorded != total:
-        raise ValidationError("Total sumber harus sama dengan seluruh biaya tercatat pada kampanye dan interval ini. Lengkapi nilai yang kosong dahulu.")
-    old = SourceCoverage.objects.filter(organization=org, reference=data["reference"]).first()
+        raise ValidationError(
+            "Total sumber harus sama dengan seluruh biaya tercatat pada kampanye dan interval ini. Lengkapi nilai yang kosong dahulu."
+        )
+    old = SourceCoverage.objects.filter(
+        organization=org, reference=data["reference"]
+    ).first()
     if old:
-        expected = {**data, "declared_spend": total, "observation_fingerprint": fingerprint}
-        if old.withdrawn_at or any(getattr(old, key) != value for key, value in expected.items()):
-            raise ValidationError("Referensi cakupan sudah digunakan. Tarik konfirmasi lama bila salah dan catat bukti dengan referensi baru.")
+        expected = {
+            **data,
+            "declared_spend": total,
+            "observation_fingerprint": fingerprint,
+        }
+        if old.withdrawn_at or any(
+            getattr(old, key) != value for key, value in expected.items()
+        ):
+            raise ValidationError(
+                "Referensi cakupan sudah digunakan. Tarik konfirmasi lama bila salah dan catat bukti dengan referensi baru."
+            )
         return old
-    obj = _save(SourceCoverage(organization=org, created_by=actor, declared_spend=total,
-                              observation_fingerprint=fingerprint, **data))
-    _audit(org, actor, "coverage.confirmed", obj, campaign_id=obj.campaign_id,
-           period_start=str(start), period_end=str(end), declared_spend=str(total),
-           basis="user_confirmed_source_evidence", observation_fingerprint=fingerprint)
+    obj = _save(
+        SourceCoverage(
+            organization=org,
+            created_by=actor,
+            declared_spend=total,
+            observation_fingerprint=fingerprint,
+            **data,
+        )
+    )
+    _audit(
+        org,
+        actor,
+        "coverage.confirmed",
+        obj,
+        campaign_id=obj.campaign_id,
+        period_start=str(start),
+        period_end=str(end),
+        declared_spend=str(total),
+        basis="user_confirmed_source_evidence",
+        observation_fingerprint=fingerprint,
+    )
     return obj
 
 
@@ -253,31 +447,128 @@ def create_lead(*, organization, actor, **fields):
         data["channel"] = campaign.channel
         if data.get("product") is None:
             data["product"] = campaign.product
-    obj = _save(Lead(organization=org, created_by=actor, **data))
-    _save(LeadStageEvent(organization=org, created_by=actor, lead=obj, from_stage="", to_stage=obj.stage, occurred_at=timezone.now()))
-    _audit(org, actor, "lead.created", obj, values=_snapshot(obj, LEAD_FIELDS), stage_time_basis="recorded_now")
+    obj = _save(
+        Lead(
+            organization=org, created_by=actor, current_owner=data.get("owner"), **data
+        )
+    )
+    _save(
+        LeadStageEvent(
+            organization=org,
+            created_by=actor,
+            lead=obj,
+            from_stage="",
+            to_stage=obj.stage,
+            occurred_at=timezone.now(),
+        )
+    )
+    _audit(
+        org,
+        actor,
+        "lead.created",
+        obj,
+        values=_snapshot(obj, LEAD_FIELDS),
+        stage_time_basis="recorded_now",
+    )
     return obj
 
 
 @transaction.atomic
-def update_lead(*, organization, actor, lead, expected_version, **fields):
+def update_lead(
+    *,
+    organization,
+    actor,
+    lead,
+    expected_version,
+    correction_reason="",
+    correction_evidence="",
+    responsibility_reason="",
+    **fields,
+):
     org = _org(organization, actor)
     obj = _scoped(Lead, lead, org)
     _version(obj, expected_version)
     data = _fields(fields, LEAD_UPDATES, org)
+    from .workflow import _lead_responsibility
+
+    responsibility_reason = _lead_responsibility(org, actor, obj, responsibility_reason)
     before = _snapshot(obj, LEAD_UPDATES)
+    response_corrected = (
+        obj.first_response_at is not None
+        and "first_response_at" in data
+        and data["first_response_at"] != obj.first_response_at
+    )
+    if response_corrected:
+        from .workflow import _reason
+
+        correction_reason = _reason(correction_reason)
+        correction_evidence = _reason(correction_evidence or correction_reason, 4000)
+    followup_date_changed = (
+        "next_follow_up" in data and data["next_follow_up"] != obj.next_follow_up
+    )
     for key, value in data.items():
         setattr(obj, key, value)
     obj.version += 1
+    if followup_date_changed:
+        obj.next_follow_up_at = None
     _save(obj)
     if obj.stage != before["stage"]:
-        _save(LeadStageEvent(organization=org, created_by=actor, lead=obj, from_stage=before["stage"], to_stage=obj.stage, occurred_at=timezone.now()))
-    _audit(org, actor, "lead.updated", obj, before=before, after=_snapshot(obj, LEAD_UPDATES), version=obj.version)
+        _save(
+            LeadStageEvent(
+                organization=org,
+                created_by=actor,
+                lead=obj,
+                from_stage=before["stage"],
+                to_stage=obj.stage,
+                occurred_at=timezone.now(),
+            )
+        )
+    if response_corrected:
+        from .workflow import _workflow_save
+        from .workflow_models import LeadContact
+
+        _workflow_save(
+            LeadContact(
+                organization=org,
+                created_by=actor,
+                lead=obj,
+                occurred_at=timezone.now(),
+                method="other",
+                outcome="correction",
+                summary=f"Koreksi respons pertama: {before['first_response_at']} → {obj.first_response_at or 'belum diketahui'}",
+                evidence=correction_evidence,
+                correction_reason=correction_reason,
+                responsibility_reason=responsibility_reason,
+            )
+        )
+    _audit(
+        org,
+        actor,
+        "lead.updated",
+        obj,
+        before=before,
+        after=_snapshot(obj, LEAD_UPDATES),
+        version=obj.version,
+        correction_reason=correction_reason if response_corrected else "",
+        responsibility_reason=responsibility_reason,
+    )
     return obj
 
 
 @transaction.atomic
-def link_invoice(*, organization, actor, lead, invoice, expected_version, confirm_identity=False):
+def link_invoice(
+    *,
+    organization,
+    actor,
+    lead,
+    invoice,
+    expected_version,
+    confirm_identity=False,
+    confirm_legacy_source=False,
+    expected_fingerprint=None,
+    reason="",
+    evidence="",
+):
     org = _org(organization, actor, FINANCE_LINKERS)
     obj = _scoped(Lead, lead, org)
     _version(obj, expected_version)
@@ -285,21 +576,65 @@ def link_invoice(*, organization, actor, lead, invoice, expected_version, confir
     if obj.invoice_id == invoice.pk:
         return obj
     if obj.invoice_id:
-        raise ValidationError("Prospek sudah terhubung ke invoice. Penggantian memerlukan alur koreksi Finance tersendiri.")
+        raise ValidationError(
+            "Prospek sudah terhubung ke invoice. Penggantian memerlukan alur koreksi Finance tersendiri."
+        )
     if invoice.status not in (Invoice.Status.ISSUED, Invoice.Status.DELIVERED):
-        raise ValidationError("Pilih invoice yang sudah diterbitkan atau layanannya selesai.")
+        raise ValidationError(
+            "Pilih invoice yang sudah diterbitkan atau layanannya selesai."
+        )
     if type(confirm_identity) is not bool:
         raise ValidationError("Konfirmasi identitas tidak valid.")
     missing_identity = not obj.product_id or not obj.party_id
     if missing_identity and not confirm_identity:
-        raise ValidationError("Konfirmasikan bahwa invoice benar milik prospek ini untuk melengkapi produk atau identitas pembeli yang belum diketahui.")
-    if obj.product_id and obj.product_id != invoice.product_id or obj.party_id and obj.party_id != invoice.party_id:
+        raise ValidationError(
+            "Konfirmasikan bahwa invoice benar milik prospek ini untuk melengkapi produk atau identitas pembeli yang belum diketahui."
+        )
+    if (
+        obj.product_id
+        and obj.product_id != invoice.product_id
+        or obj.party_id
+        and obj.party_id != invoice.party_id
+    ):
         raise ValidationError("Produk dan pembeli invoice harus sama dengan prospek.")
     if invoice.date < timezone.localdate(obj.received_at):
-        raise ValidationError("Invoice mendahului prospek; atribusi tidak dapat dibuat dari hubungan ini.")
-    if Lead.objects.filter(organization=org, invoice=invoice).exclude(pk=obj.pk).exists():
-        raise ValidationError("Invoice sudah terhubung ke prospek lain dan tidak boleh dihitung dua kali.")
+        raise ValidationError(
+            "Invoice mendahului prospek; atribusi tidak dapat dibuat dari hubungan ini."
+        )
+    if (
+        Lead.objects.filter(organization=org, invoice=invoice)
+        .exclude(pk=obj.pk)
+        .exists()
+    ):
+        raise ValidationError(
+            "Invoice sudah terhubung ke prospek lain dan tidak boleh dihitung dua kali."
+        )
+    from operations.models import OrderLine
+
+    if (
+        OrderLine.objects.filter(organization=org, invoice=invoice)
+        .exclude(order__lead=None)
+        .exclude(order__lead=obj)
+        .exists()
+    ):
+        raise ValidationError(
+            "Invoice sudah diatribusikan ke peluang lain melalui pesanan. Periksa pengaitan pesanan dahulu."
+        )
     before_mapping = {"party_id": obj.party_id, "product_id": obj.product_id}
+    from .identity_recovery import (
+        prepare_identity_transition,
+        record_identity_transition,
+    )
+
+    prepared = prepare_identity_transition(
+        organization=org,
+        actor=actor,
+        lead=obj,
+        confirm_legacy_source=confirm_legacy_source,
+        expected_fingerprint=expected_fingerprint,
+        reason=reason,
+        evidence=evidence,
+    )
     if obj.party_id is None:
         obj.party = invoice.party
     if obj.product_id is None:
@@ -307,16 +642,43 @@ def link_invoice(*, organization, actor, lead, invoice, expected_version, confir
     obj.invoice = invoice
     obj._invoice_link = True
     obj.version += 1
-    _save(obj)
-    _audit(org, actor, "lead.invoice_linked", obj, invoice_id=invoice.pk, version=obj.version, basis="finance_invoice_reference",
-           before_mapping=before_mapping, after_mapping={"party_id": obj.party_id, "product_id": obj.product_id}, identity_confirmed=confirm_identity)
+    try:
+        _save(obj)
+    finally:
+        obj.__dict__.pop("_invoice_link", None)
+        obj.__dict__.pop("_service_write", None)
+    record_identity_transition(
+        organization=org,
+        actor=actor,
+        lead=obj,
+        prepared=prepared,
+        kind="invoice_link",
+        invoice=invoice,
+        identity_confirmed=confirm_identity,
+    )
+    _audit(
+        org,
+        actor,
+        "lead.invoice_linked",
+        obj,
+        invoice_id=invoice.pk,
+        version=obj.version,
+        basis="finance_invoice_reference",
+        before_mapping=before_mapping,
+        after_mapping={"party_id": obj.party_id, "product_id": obj.product_id},
+        identity_confirmed=confirm_identity,
+    )
     return obj
 
 
 @transaction.atomic
 def create_action(*, organization, actor, **fields):
     org = _org(organization, actor)
-    obj = _save(MarketingAction(organization=org, created_by=actor, **_fields(fields, ACTION_FIELDS, org)))
+    obj = _save(
+        MarketingAction(
+            organization=org, created_by=actor, **_fields(fields, ACTION_FIELDS, org)
+        )
+    )
     _audit(org, actor, "action.created", obj, values=_snapshot(obj, ACTION_FIELDS))
     return obj
 
@@ -326,25 +688,47 @@ def update_action(*, organization, actor, action, expected_version, **fields):
     org = _org(organization, actor)
     obj = _scoped(MarketingAction, action, org)
     _version(obj, expected_version)
+    if fields.get("status") in {"done", "dismissed"} or hasattr(obj, "work_activity"):
+        raise ValidationError(
+            "Lanjutkan melalui pekerjaan terkait: ajukan bukti lalu minta pemeriksaan. Status tindakan lama tidak dapat ditutup langsung."
+        )
     before = _snapshot(obj, {"status", "outcome"})
     for key, value in _fields(fields, {"status", "outcome"}, org).items():
         setattr(obj, key, value)
     obj.version += 1
     _save(obj)
-    _audit(org, actor, "action.updated", obj, before=before, after=_snapshot(obj, {"status", "outcome"}), version=obj.version)
+    _audit(
+        org,
+        actor,
+        "action.updated",
+        obj,
+        before=before,
+        after=_snapshot(obj, {"status", "outcome"}),
+        version=obj.version,
+    )
     return obj
 
 
 @transaction.atomic
-def configure_marketing_ai_policy(*, organization, actor, enabled, monthly_budget_usd, request_cap_usd):
+def configure_marketing_ai_policy(
+    *, organization, actor, enabled, monthly_budget_usd, request_cap_usd
+):
     from .ai import DISCLOSURE_TEXT, DISCLOSURE_VERSION
+
     org = _org(organization, actor, {"owner"})
     if type(enabled) is not bool:
         raise ValidationError("Status izin AI tidak valid.")
     monthly = _decimal(monthly_budget_usd, 6, "1000000")
     cap = _decimal(request_cap_usd, 6, "1000000")
-    if monthly is None or cap is None or enabled and (monthly <= 0 or cap <= 0 or cap > monthly):
-        raise ValidationError("AI aktif membutuhkan batas bulanan dan per permintaan yang positif; batas permintaan tidak boleh melebihi batas bulanan.")
+    if (
+        monthly is None
+        or cap is None
+        or enabled
+        and (monthly <= 0 or cap <= 0 or cap > monthly)
+    ):
+        raise ValidationError(
+            "AI aktif membutuhkan batas bulanan dan per permintaan yang positif; batas permintaan tidak boleh melebihi batas bulanan."
+        )
     obj = MarketingAIPolicy.objects.filter(organization=org).first()
     if obj is None:
         obj = MarketingAIPolicy(organization=org)
@@ -354,5 +738,13 @@ def configure_marketing_ai_policy(*, organization, actor, enabled, monthly_budge
     obj.approved_by, obj.approved_at = actor, timezone.now()
     obj.disclosure_version, obj.disclosure_text = DISCLOSURE_VERSION, DISCLOSURE_TEXT
     obj.save()
-    _audit(org, actor, "ai.policy_changed", obj, enabled=enabled, version=obj.policy_version, disclosure_version=DISCLOSURE_VERSION)
+    _audit(
+        org,
+        actor,
+        "ai.policy_changed",
+        obj,
+        enabled=enabled,
+        version=obj.policy_version,
+        disclosure_version=DISCLOSURE_VERSION,
+    )
     return obj

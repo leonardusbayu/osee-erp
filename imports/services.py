@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import date
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
@@ -13,10 +14,10 @@ from django.db import transaction
 
 from core.audit import record
 from core.models import Membership, Organization
-from finance.models import Bill, Party
+from finance.models import Bill, Party, normalize_supplier_reference
 from finance.services import create_bill
-from .models import ImportBatch, ImportException, MonthlySnapshot, SourceDocument
 
+from .models import ImportBatch, ImportException, MonthlySnapshot, SourceDocument
 
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_BUNDLE_BYTES = 25 * 1024 * 1024
@@ -27,7 +28,11 @@ def _fail(message):
 
 
 def _text(value, label, limit=10000, *, empty=False):
-    if not isinstance(value, str) or len(value) > limit or (not empty and not value.strip()):
+    if (
+        not isinstance(value, str)
+        or len(value) > limit
+        or (not empty and not value.strip())
+    ):
         _fail(label)
     return value
 
@@ -92,8 +97,21 @@ def _reference(value, table, label, *, nullable=False):
 
 
 def _validate(bundle):
-    required = {"schema_version", "sources", "months", "channels", "details", "exceptions", "annual_summary", "supplier_invoice"}
-    if not isinstance(bundle, dict) or not required.issubset(bundle) or bundle["schema_version"] != "1.0":
+    required = {
+        "schema_version",
+        "sources",
+        "months",
+        "channels",
+        "details",
+        "exceptions",
+        "annual_summary",
+        "supplier_invoice",
+    }
+    if (
+        not isinstance(bundle, dict)
+        or not required.issubset(bundle)
+        or bundle["schema_version"] != "1.0"
+    ):
         _fail("versi atau struktur utama")
     sources = _indexed(bundle["sources"], "sumber")
     months = _indexed(bundle["months"], "bulan")
@@ -106,7 +124,11 @@ def _validate(bundle):
     if len(recaps) != 1:
         _fail("tepat satu sumber rekap diperlukan")
     for source in sources.values():
-        _required(source, ("kind", "relative_path", "original_filename", "sha256", "page_count"), "sumber")
+        _required(
+            source,
+            ("kind", "relative_path", "original_filename", "sha256", "page_count"),
+            "sumber",
+        )
         if source.get("kind") not in {"operating_recap", "supplier_invoice"}:
             _fail("jenis sumber")
         sha = source.get("sha256")
@@ -114,11 +136,27 @@ def _validate(bundle):
             _fail("SHA-256 sumber")
         _integer(source.get("page_count"), "jumlah halaman", positive=True)
         name = _text(source.get("original_filename"), "nama asli berkas", 240)
-        if PurePosixPath(name.replace("\\", "/")).name != name or any(not char.isprintable() for char in name):
+        if PurePosixPath(name.replace("\\", "/")).name != name or any(
+            not char.isprintable() for char in name
+        ):
             _fail("nama asli harus basename tanpa karakter kontrol")
     periods = set()
     for month in months.values():
-        _required(month, ("source_id", "source_period", "page", "printed_count", "printed_amount", "detail_count", "format_controls", "coverage", "locator"), "bulan")
+        _required(
+            month,
+            (
+                "source_id",
+                "source_period",
+                "page",
+                "printed_count",
+                "printed_amount",
+                "detail_count",
+                "format_controls",
+                "coverage",
+                "locator",
+            ),
+            "bulan",
+        )
         period = _period(month.get("source_period"))
         _reference(month.get("source_id"), sources, "sumber bulan tidak tersedia")
         if period in periods:
@@ -134,7 +172,20 @@ def _validate(bundle):
             _fail("kontrol format bulan")
         _locator(month.get("locator"), "bulan")
     for channel in channels.values():
-        _required(channel, ("month_id", "source_label", "raw_header", "header_price", "printed_count", "printed_amount", "legacy_contributions", "locator"), "kolom sumber")
+        _required(
+            channel,
+            (
+                "month_id",
+                "source_label",
+                "raw_header",
+                "header_price",
+                "printed_count",
+                "printed_amount",
+                "legacy_contributions",
+                "locator",
+            ),
+            "kolom sumber",
+        )
         _reference(channel.get("month_id"), months, "bulan kolom tidak tersedia")
         _text(channel.get("source_label"), "label kolom", 500)
         _text(channel.get("raw_header"), "header sumber", 2000, empty=True)
@@ -144,14 +195,29 @@ def _validate(bundle):
             _fail("kontribusi historis kolom")
         _locator(channel.get("locator"), "kolom")
     for detail in details.values():
-        _required(detail, ("month_id", "channel_id", "original_date_text", "parsed_source_date", "proposed_context_date", "quantity", "year_conflict", "locator"), "rincian")
+        _required(
+            detail,
+            (
+                "month_id",
+                "channel_id",
+                "original_date_text",
+                "parsed_source_date",
+                "proposed_context_date",
+                "quantity",
+                "year_conflict",
+                "locator",
+            ),
+            "rincian",
+        )
         _reference(detail.get("month_id"), months, "bulan rincian tidak tersedia")
         _reference(detail.get("channel_id"), channels, "kolom rincian tidak tersedia")
         if channels[detail["channel_id"]]["month_id"] != detail["month_id"]:
             _fail("bulan rincian berbeda dari kolom")
         _text(detail.get("original_date_text"), "tanggal asli", 100)
         _iso_date(detail.get("parsed_source_date"), "tanggal sumber", nullable=True)
-        _iso_date(detail.get("proposed_context_date"), "usulan tanggal konteks", nullable=True)
+        _iso_date(
+            detail.get("proposed_context_date"), "usulan tanggal konteks", nullable=True
+        )
         _integer(detail.get("quantity"), "kuantitas rincian")
         if type(detail.get("year_conflict")) is not bool:
             _fail("penanda konflik tahun")
@@ -165,21 +231,42 @@ def _validate(bundle):
                 _text(candidate, "kandidat tanggal sumber", 100)
         if "date_status" in detail:
             _text(detail["date_status"], "status tanggal", 100)
-        if detail.get("date_ambiguous") and (detail["parsed_source_date"] is not None or detail["proposed_context_date"] is not None):
+        if detail.get("date_ambiguous") and (
+            detail["parsed_source_date"] is not None
+            or detail["proposed_context_date"] is not None
+        ):
             _fail("tanggal ambigu harus tetap null sampai ada bukti penyelesaian")
         _locator(detail.get("locator"), "rincian")
     for exception in exceptions.values():
-        for key, limit in (("code", 100), ("severity", 40), ("status", 40), ("explanation", 10000)):
+        for key, limit in (
+            ("code", 100),
+            ("severity", 40),
+            ("status", 40),
+            ("explanation", 10000),
+        ):
             _text(exception.get(key), f"pengecualian {key}", limit)
         for field, table in (("month_id", months), ("channel_id", channels)):
-            _reference(exception.get(field), table, f"referensi pengecualian {field}", nullable=True)
+            _reference(
+                exception.get(field),
+                table,
+                f"referensi pengecualian {field}",
+                nullable=True,
+            )
         ids = exception.get("detail_ids")
-        if not isinstance(ids, list) or any(not isinstance(key, str) or key not in details for key in ids):
+        if not isinstance(ids, list) or any(
+            not isinstance(key, str) or key not in details for key in ids
+        ):
             _fail("referensi rincian pengecualian")
-        if not isinstance(exception.get("observed"), dict) or not isinstance(exception.get("expected"), dict):
+        if not isinstance(exception.get("observed"), dict) or not isinstance(
+            exception.get("expected"), dict
+        ):
             _fail("pengamatan pengecualian")
     for month_id, month in months.items():
-        counted = sum(detail["quantity"] for detail in details.values() if detail["month_id"] == month_id)
+        counted = sum(
+            detail["quantity"]
+            for detail in details.values()
+            if detail["month_id"] == month_id
+        )
         if month["detail_count"] is not None and month["detail_count"] != counted:
             _fail("detail_count tidak sama dengan jumlah kuantitas rincian sumber")
     annual = bundle["annual_summary"]
@@ -207,7 +294,10 @@ def _validate(bundle):
         for key in ("quantity", "unit_price", "base_amount", "total_amount"):
             _integer(facts.get(key), key, positive=True)
         _integer(facts.get("vat_amount"), "vat_amount")
-        if facts["quantity"] * facts["unit_price"] != facts["base_amount"] or facts["base_amount"] + facts["vat_amount"] != facts["total_amount"]:
+        if (
+            facts["quantity"] * facts["unit_price"] != facts["base_amount"]
+            or facts["base_amount"] + facts["vat_amount"] != facts["total_amount"]
+        ):
             _fail("total invoice pemasok tidak cocok dengan komponen tertulis")
     return sources, months, channels, details, exceptions, recaps[0]["sha256"]
 
@@ -215,7 +305,11 @@ def _validate(bundle):
 def _source_bytes(root, source):
     relative = _text(source.get("relative_path"), "lokasi relatif sumber", 300)
     normalized = PurePosixPath(relative.replace("\\", "/"))
-    if normalized.is_absolute() or ".." in normalized.parts or Path(relative).is_absolute():
+    if (
+        normalized.is_absolute()
+        or ".." in normalized.parts
+        or Path(relative).is_absolute()
+    ):
         _fail("lokasi sumber harus berada di direktori bundel")
     path = (root / Path(*normalized.parts)).resolve()
     if not path.is_relative_to(root) or not path.is_file():
@@ -230,7 +324,15 @@ def _source_bytes(root, source):
 
 
 def _authorize(org, actor):
-    if actor is not None and (not getattr(actor, "is_authenticated", False) or not Membership.objects.filter(organization=org, user=actor, role__in=["owner", "finance"]).exists()):
+    if actor is not None and (
+        not getattr(actor, "is_authenticated", False)
+        or not Membership.objects.filter(
+            organization=org,
+            user=actor,
+            user__is_active=True,
+            role__in=["owner", "finance"],
+        ).exists()
+    ):
         raise PermissionDenied("Peran akun tidak dapat mengimpor arsip sumber.")
 
 
@@ -238,20 +340,70 @@ def _draft_supplier_bill(org, supplier_invoice, actor):
     if supplier_invoice is None:
         return None
     facts = supplier_invoice["facts"]
-    suppliers = Party.objects.filter(organization=org, kind="supplier", name=facts["supplier_name"])
-    if suppliers.count() > 1:
+    name_key = lambda value: " ".join(
+        unicodedata.normalize("NFKC", value).split()
+    ).casefold()
+    suppliers = [
+        party
+        for party in Party.objects.filter(organization=org, kind="supplier")
+        if name_key(party.name) == name_key(facts["supplier_name"])
+    ]
+    if len(suppliers) > 1:
         _fail("nama pemasok ambigu; tinjau kontak sebelum impor")
-    supplier = suppliers.first() or Party.objects.create(organization=org, kind="supplier", name=facts["supplier_name"])
-    existing = Bill.objects.filter(organization=org, supplier=supplier, number=facts["invoice_number"]).first()
-    fields = {"amount": Decimal(facts["total_amount"]), "supplier_vat": Decimal(facts["vat_amount"]),
-              "date": _iso_date(facts["invoice_date"], "tanggal invoice"),
-              "service_date": _iso_date(facts["service_date"], "tanggal layanan")}
+    supplier = (
+        suppliers[0]
+        if suppliers
+        else Party.objects.create(
+            organization=org, kind="supplier", name=facts["supplier_name"]
+        )
+    )
+    original = facts["invoice_number"].strip()
+    identity = normalize_supplier_reference(original)
+    if not identity:
+        _fail("nomor dokumen asli pemasok wajib diisi")
+    bills = Bill.objects.select_for_update().filter(organization=org, supplier=supplier)
+    matches = list(bills.filter(supplier_reference_key=identity))
+    legacy = [
+        bill
+        for bill in bills.filter(supplier_reference_key="")
+        if normalize_supplier_reference(bill.number) == identity
+    ]
+    if len(matches) + len(legacy) > 1:
+        _fail(
+            "beberapa tagihan memakai identitas dokumen pemasok yang sama; perlu pemeriksaan Finance, tanpa penggabungan otomatis"
+        )
+    existing = (matches or legacy or [None])[0]
+    fields = {
+        "amount": Decimal(facts["total_amount"]),
+        "supplier_vat": Decimal(facts["vat_amount"]),
+        "date": _iso_date(facts["invoice_date"], "tanggal invoice"),
+        "service_date": _iso_date(facts["service_date"], "tanggal layanan"),
+        "category": "provider",
+    }
     if existing:
         if any(getattr(existing, key) != value for key, value in fields.items()):
             _fail("nomor tagihan pemasok sudah ada dengan fakta berbeda")
+        record(
+            org,
+            actor,
+            "imports.supplier_identity.matched",
+            obj=existing,
+            detail={
+                "supplier_reference": original,
+                "supplier_reference_key": identity,
+                "identity_basis": "canonical_supplier_reference"
+                if matches
+                else "legacy_original_number_verified",
+            },
+        )
         return existing
-    return create_bill(organization=org, supplier=supplier, number=facts["invoice_number"],
-                       category="provider", actor=actor, **fields)
+    return create_bill(
+        organization=org,
+        supplier=supplier,
+        supplier_reference=original,
+        actor=actor,
+        **fields,
+    )
 
 
 def import_bundle(*, organization, bundle_path, actor=None):
@@ -261,57 +413,130 @@ def import_bundle(*, organization, bundle_path, actor=None):
     try:
         if not path.is_file() or path.stat().st_size > MAX_BUNDLE_BYTES:
             _fail("berkas bundel JSON tidak tersedia atau terlalu besar")
-        bundle = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=lambda value: _fail("angka JSON tidak terbatas"))
-        canonical = json.dumps(bundle, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        bundle = json.loads(
+            path.read_text(encoding="utf-8-sig"),
+            parse_constant=lambda value: _fail("angka JSON tidak terbatas"),
+        )
+        canonical = json.dumps(
+            bundle,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
     except (UnicodeError, ValueError, TypeError, OSError) as exc:
         raise ValidationError("Bundel JSON tidak dapat dibaca.") from exc
     sources, months, channels, details, exceptions, source_hash = _validate(bundle)
-    source_data = {key: _source_bytes(path.parent, source) for key, source in sources.items()}
+    source_data = {
+        key: _source_bytes(path.parent, source) for key, source in sources.items()
+    }
     bundle_hash = hashlib.sha256(canonical).hexdigest()
     stored = []
     try:
         with transaction.atomic(durable=True):
             org = Organization.objects.select_for_update().get(pk=organization.pk)
             _authorize(org, actor)
-            old = ImportBatch.objects.filter(organization=org, source_hash=source_hash).first()
+            old = ImportBatch.objects.filter(
+                organization=org, source_hash=source_hash
+            ).first()
             if old:
                 if old.bundle_hash != bundle_hash:
-                    raise ValidationError("Sumber yang sama sudah diimpor dengan isi bundel berbeda. Arsip lama tidak ditimpa.")
+                    raise ValidationError(
+                        "Sumber yang sama sudah diimpor dengan isi bundel berbeda. Arsip lama tidak ditimpa."
+                    )
                 return old
             for month in months.values():
-                if MonthlySnapshot.objects.filter(organization=org, source_period=month["source_period"]).exists():
-                    raise ValidationError("Periode sumber sudah diarsipkan; impor tumpang tindih memerlukan peninjauan.")
+                if MonthlySnapshot.objects.filter(
+                    organization=org, source_period=month["source_period"]
+                ).exists():
+                    raise ValidationError(
+                        "Periode sumber sudah diarsipkan; impor tumpang tindih memerlukan peninjauan."
+                    )
             bill = _draft_supplier_bill(org, bundle["supplier_invoice"], actor)
-            batch = ImportBatch(organization=org, source_hash=source_hash, bundle_hash=bundle_hash, payload=bundle,
-                                supplier_bill=bill, metadata={"source_count": len(sources), "month_count": len(months),
-                                                            "channel_rows": len(channels), "detail_rows": len(details), "exception_count": len(exceptions)})
+            batch = ImportBatch(
+                organization=org,
+                source_hash=source_hash,
+                bundle_hash=bundle_hash,
+                payload=bundle,
+                supplier_bill=bill,
+                metadata={
+                    "source_count": len(sources),
+                    "month_count": len(months),
+                    "channel_rows": len(channels),
+                    "detail_rows": len(details),
+                    "exception_count": len(exceptions),
+                },
+            )
             batch._import_creation = True
             batch.save()
             for key, source in sources.items():
-                doc = SourceDocument(organization=org, batch=batch, source_id=key, kind=source["kind"],
-                                     original_name=source["original_filename"], sha256=source["sha256"],
-                                     size=len(source_data[key]), page_count=source["page_count"])
+                doc = SourceDocument(
+                    organization=org,
+                    batch=batch,
+                    source_id=key,
+                    kind=source["kind"],
+                    original_name=source["original_filename"],
+                    sha256=source["sha256"],
+                    size=len(source_data[key]),
+                    page_count=source["page_count"],
+                )
                 doc._import_creation = True
-                doc.file.save(source["original_filename"], ContentFile(source_data[key]), save=False)
+                doc.file.save(
+                    source["original_filename"],
+                    ContentFile(source_data[key]),
+                    save=False,
+                )
                 stored.append((doc.file.storage, doc.file.name))
                 doc.save()
             for key, month in months.items():
                 period = _period(month["source_period"])
-                row = MonthlySnapshot(organization=org, batch=batch, source_id=key, source_period=month["source_period"],
-                                      year=period.year, month=period.month, source_page=month["page"], printed_count=month["printed_count"],
-                                      printed_amount=None if month["printed_amount"] is None else Decimal(month["printed_amount"]),
-                                      detail_count=month["detail_count"], coverage=month["coverage"], payload=month)
+                row = MonthlySnapshot(
+                    organization=org,
+                    batch=batch,
+                    source_id=key,
+                    source_period=month["source_period"],
+                    year=period.year,
+                    month=period.month,
+                    source_page=month["page"],
+                    printed_count=month["printed_count"],
+                    printed_amount=None
+                    if month["printed_amount"] is None
+                    else Decimal(month["printed_amount"]),
+                    detail_count=month["detail_count"],
+                    coverage=month["coverage"],
+                    payload=month,
+                )
                 row._import_creation = True
                 row.save()
             for key, exception in exceptions.items():
                 month_id = exception.get("month_id") or ""
-                locator = exception.get("locator") or (months[month_id]["locator"] if month_id else {})
-                row = ImportException(organization=org, batch=batch, exception_id=key, code=exception["code"], severity=exception["severity"],
-                                      message=exception["explanation"], month_source_id=month_id, source_locator=locator, payload=exception)
+                locator = exception.get("locator") or (
+                    months[month_id]["locator"] if month_id else {}
+                )
+                row = ImportException(
+                    organization=org,
+                    batch=batch,
+                    exception_id=key,
+                    code=exception["code"],
+                    severity=exception["severity"],
+                    message=exception["explanation"],
+                    month_source_id=month_id,
+                    source_locator=locator,
+                    payload=exception,
+                )
                 row._import_creation = True
                 row.save()
-            record(org, actor, "imports.source_bundle.imported", obj=batch,
-                   detail={"source_hash": source_hash, "bundle_hash": bundle_hash, **batch.metadata})
+            record(
+                org,
+                actor,
+                "imports.source_bundle.imported",
+                obj=batch,
+                detail={
+                    "source_hash": source_hash,
+                    "bundle_hash": bundle_hash,
+                    **batch.metadata,
+                },
+            )
         return batch
     except Exception:
         for storage, name in stored:
@@ -322,45 +547,111 @@ def import_bundle(*, organization, bundle_path, actor=None):
 def month_data(*, organization, source_period):
     _period(source_period)
     try:
-        month = MonthlySnapshot.objects.select_related("batch").get(organization=organization, source_period=source_period)
+        month = MonthlySnapshot.objects.select_related("batch").get(
+            organization=organization, source_period=source_period
+        )
     except MonthlySnapshot.DoesNotExist as exc:
-        raise ValidationError("Periode sumber tidak tersedia untuk organisasi ini.") from exc
+        raise ValidationError(
+            "Periode sumber tidak tersedia untuk organisasi ini."
+        ) from exc
     payload = month.batch.payload
-    return {"month": month, "batch": month.batch,
-            "channels": [row for row in payload["channels"] if row["month_id"] == month.source_id],
-            "details": [row for row in payload["details"] if row["month_id"] == month.source_id],
-            "exceptions": month.batch.exceptions.filter(organization=organization, month_source_id=month.source_id),
-            "source_documents": month.batch.source_documents.filter(organization=organization)}
+    return {
+        "month": month,
+        "batch": month.batch,
+        "channels": [
+            row for row in payload["channels"] if row["month_id"] == month.source_id
+        ],
+        "details": [
+            row for row in payload["details"] if row["month_id"] == month.source_id
+        ],
+        "exceptions": month.batch.exceptions.filter(
+            organization=organization, month_source_id=month.source_id
+        ),
+        "source_documents": month.batch.source_documents.filter(
+            organization=organization
+        ),
+    }
 
 
 def import_summary(*, organization, year=2026):
     _period(f"{year}-01")
-    months = list(MonthlySnapshot.objects.filter(organization=organization, year=year).select_related("batch"))
+    months = list(
+        MonthlySnapshot.objects.filter(
+            organization=organization, year=year
+        ).select_related("batch")
+    )
     batch_ids = {month.batch_id for month in months}
-    batches = list(ImportBatch.objects.filter(organization=organization, pk__in=batch_ids))
+    batches = list(
+        ImportBatch.objects.filter(organization=organization, pk__in=batch_ids)
+    )
     labels = set()
     detail_rows = 0
     annual_counts = []
     for batch in batches:
         source_ids = {month.source_id for month in months if month.batch_id == batch.pk}
-        labels.update(row["source_label"] for row in batch.payload["channels"] if row["month_id"] in source_ids)
-        detail_rows += sum(row["month_id"] in source_ids for row in batch.payload["details"])
+        labels.update(
+            row["source_label"]
+            for row in batch.payload["channels"]
+            if row["month_id"] in source_ids
+        )
+        detail_rows += sum(
+            row["month_id"] in source_ids for row in batch.payload["details"]
+        )
         printed = batch.payload["annual_summary"].get("printed_total")
         if isinstance(printed, dict):
             printed = printed.get("count", printed.get("printed_count"))
         if type(printed) is int:
             annual_counts.append(printed)
     covered = [month.source_period for month in months]
-    exceptions = ImportException.objects.filter(organization=organization, batch_id__in=batch_ids)
-    observed_amounts = [month.printed_amount for month in months if month.printed_amount is not None]
-    observed_counts = [month.printed_count for month in months if month.printed_count is not None]
-    detail_counts = [month.detail_count for month in months if month.detail_count is not None]
-    return {"year": year, "months": months, "batches": batches,
-            "reported_amount": sum(observed_amounts, Decimal("0.00")) if observed_amounts else None,
-            "printed_count": sum(observed_counts) if observed_counts else None,
-            "detail_count": sum(detail_counts) if detail_counts else None,
-            "channel_count": len(labels), "detail_rows": detail_rows, "exception_count": exceptions.count(),
-            "covered_months": covered, "missing_months": [f"{year}-{month:02d}" for month in range(1, 13) if f"{year}-{month:02d}" not in covered],
-            "annual_printed_count": sum(annual_counts) if annual_counts else None,
-            "source_documents": SourceDocument.objects.filter(organization=organization, batch_id__in=batch_ids), "exceptions": exceptions,
-            "coverage": "Arsip halaman sumber, bukan laporan tahun lengkap, kas, atau buku besar."}
+    exceptions = ImportException.objects.filter(
+        organization=organization, batch_id__in=batch_ids
+    )
+    observed_amounts = [
+        month.printed_amount for month in months if month.printed_amount is not None
+    ]
+    observed_counts = [
+        month.printed_count for month in months if month.printed_count is not None
+    ]
+    detail_counts = [
+        month.detail_count for month in months if month.detail_count is not None
+    ]
+    from .review_services import exception_states
+
+    resolution_states = list(
+        exception_states(
+            organization=organization, exceptions=exceptions.select_related("batch")
+        ).values()
+    )
+    resolved_count = sum(state["status"] == "resolved" for state in resolution_states)
+    return {
+        "year": year,
+        "months": months,
+        "batches": batches,
+        "reported_amount": sum(observed_amounts, Decimal("0.00"))
+        if observed_amounts
+        else None,
+        "printed_count": sum(observed_counts) if observed_counts else None,
+        "detail_count": sum(detail_counts) if detail_counts else None,
+        "channel_count": len(labels),
+        "detail_rows": detail_rows,
+        "exception_count": exceptions.count(),
+        "resolved_count": resolved_count,
+        "unresolved_count": len(resolution_states) - resolved_count,
+        "review_fingerprint": hashlib.sha256(
+            json.dumps(
+                [state["fingerprint"] for state in resolution_states], sort_keys=True
+            ).encode()
+        ).hexdigest(),
+        "covered_months": covered,
+        "missing_months": [
+            f"{year}-{month:02d}"
+            for month in range(1, 13)
+            if f"{year}-{month:02d}" not in covered
+        ],
+        "annual_printed_count": sum(annual_counts) if annual_counts else None,
+        "source_documents": SourceDocument.objects.filter(
+            organization=organization, batch_id__in=batch_ids
+        ),
+        "exceptions": exceptions,
+        "coverage": "Arsip halaman sumber, bukan laporan tahun lengkap, kas, atau buku besar.",
+    }

@@ -1,0 +1,126 @@
+{% extends 'base.html' %}
+{% load finance_format %}
+{% block title %}Pendaftaran peserta{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <a href="{% url 'operations:order' registration.line.order_id %}" class="back-link">← {{ registration.line.order.reference }}</a>
+    <h1>{{ registration.participant.name }}</h1>
+    <p>{{ registration.get_status_display }} · {{ registration.line.product.name }}</p>
+  </div>
+</div>
+
+<section class="panel">
+  <div class="panel-body">
+    {% if registration.line.product.kind == 'course' %}
+      <h2>Kemajuan kursus</h2>
+      {% if course_progress.configured %}
+        <p><strong>{{ course_progress.attended_sessions }} / {{ course_progress.total_sessions }} pertemuan dihadiri</strong></p>
+        <p>{{ course_progress.scheduled_sessions }} pertemuan sudah dijadwalkan. Catatan pertemuan tidak membuat invoice atau membukukan pendapatan.</p>
+      {% else %}
+        <p>Jumlah dan jadwal pertemuan belum diatur.</p>
+      {% endif %}
+      <a class="button button-primary" href="{{ course_plan_url }}">Lihat jadwal dan kehadiran kursus</a>
+    {% endif %}
+    <div class="heading-actions spaced">
+      {% if registration.line.product.kind != 'course' %}
+        <h2>Langkah berikutnya</h2>
+        {% if registration.status == 'registered' %}
+          <p>Pilih jadwal tes yang sudah dikonfirmasi dengan peserta.</p>
+        {% elif registration.status == 'scheduled' %}
+          <p>Setelah waktu tes, periksa daftar hadir lalu catat apakah peserta hadir.</p>
+        {% elif registration.status == 'absent' %}
+          <p>Peserta tercatat tidak hadir. Anda dapat menjadwalkan ulang atau memperbaiki catatan setelah memeriksa bukti.</p>
+        {% elif registration.status == 'attended' and can_view_financial_details %}
+          <p>Periksa bukti dan konfirmasikan layanan selesai. Tindakan Finance/Owner ini memperbarui unit layanan dan pembukuan terkait.</p>
+        {% elif registration.status == 'attended' %}
+          <p>Kehadiran sudah dicatat. Finance memeriksa bukti dan mencatat penyelesaian yang memperbarui pembukuan.</p>
+        {% elif registration.status == 'completed' %}
+          <p>Layanan peserta sudah dicatat selesai.</p>
+        {% elif registration.status == 'cancelled' %}
+          <p>Pendaftaran dibatalkan. Finance memeriksa pengembalian uang secara terpisah bila diperlukan.</p>
+        {% endif %}
+        {% if registration.status == 'registered' or registration.status == 'absent' %}
+          <a class="button button-primary" href="{% url 'operations:registration_action' registration.pk 'schedule' %}">Jadwalkan / pindah sesi</a>
+        {% endif %}
+        {% if registration.status == 'scheduled' %}
+          <a class="button button-primary" href="{% url 'operations:registration_action' registration.pk 'attendance' %}">Catat kehadiran</a>
+          <a class="button button-secondary" href="{% url 'operations:registration_action' registration.pk 'schedule' %}">Jadwalkan / pindah sesi</a>
+        {% endif %}
+        {% if registration.status == 'attended' and can_view_financial_details %}
+          <a class="button button-primary" href="{% url 'operations:registration_action' registration.pk 'complete' %}">Konfirmasikan layanan selesai</a>
+        {% endif %}
+        {% if registration.status == 'attended' or registration.status == 'absent' %}
+          {% if not registration.delivery_id %}
+            <a class="button button-secondary" href="{% url 'operations:registration_action' registration.pk 'correct-attendance' %}">Koreksi kehadiran</a>
+          {% endif %}
+        {% endif %}
+      {% endif %}
+      <a class="button button-secondary" href="{% url 'operations:registration_action' registration.pk 'correct-identity' %}">Koreksi data peserta</a>
+    </div>
+  </div>
+</section>
+
+<section class="panel spaced">
+  <div class="panel-heading">
+    {% if can_view_financial_details %}<h2>Peserta dan tagihan</h2>{% else %}<h2>Ringkasan peserta</h2>{% endif %}
+  </div>
+  <div class="panel-body">
+    <p>Pemesan: <strong>{{ registration.line.order.buyer.name }}</strong></p>
+    <p>Kontak: {{ registration.participant.email|default:'Email belum dicatat' }} · {{ registration.participant.phone|default:'Nomor belum dicatat' }}</p>
+    {% if registration.line.product.kind == 'course' %}
+      <p>Jadwal kursus: {% if course_progress.configured %}{{ course_progress.scheduled_sessions }} dari {{ course_progress.total_sessions }} pertemuan dijadwalkan{% else %}Belum diatur{% endif %}</p>
+    {% else %}
+      <p>Jadwal tes: {% if registration.session %}{{ registration.session.reference }} · {{ registration.session.starts_at|date:'d M Y H:i' }} WIB{% else %}Belum terjadwal{% endif %}</p>
+    {% endif %}
+    {% if can_view_financial_details %}
+      {% if registration.line.invoice %}
+        <p><a href="{% url 'sale_detail' registration.line.invoice_id %}">{{ registration.line.invoice.number }}</a> · sisa tagihan {{ registration.line.invoice.outstanding_amount|money }}</p>
+      {% else %}
+        <p><strong>Belum memiliki invoice.</strong> Finance perlu menerbitkannya sebelum tes.</p>
+      {% endif %}
+    {% elif registration.line.invoice %}
+      <p>Invoice sudah tercatat. Hubungi Finance untuk memastikan pembayaran sebelum tes.</p>
+    {% else %}
+      <p>Invoice belum diterbitkan. Hubungi Finance sebelum layanan diberikan.</p>
+    {% endif %}
+    <p class="field-help">Terdaftar, hadir, lunas, dan layanan selesai adalah status yang diperiksa terpisah.</p>
+  </div>
+</section>
+
+<details class="panel spaced">
+  <summary class="panel-heading"><strong>Riwayat dan asal pendaftaran</strong></summary>
+  <div class="panel-body">
+    <p>Sumber: {{ registration.source }} · {{ registration.external_id }}</p>
+    {% for event in history %}
+      <p>
+        <strong>{{ event.timeline_label }}{% if event.timeline_detail %}: {{ event.timeline_detail }}{% endif %}</strong><br>
+        {% if event.action == 'registration.identity_corrected' %}
+          Sebelum: {{ event.identity_before.name }} · {{ event.identity_before.email|default:'Email kosong' }} · {{ event.identity_before.phone|default:'Nomor kosong' }}<br>
+          Sesudah: {{ event.identity_after.name }} · {{ event.identity_after.email|default:'Email kosong' }} · {{ event.identity_after.phone|default:'Nomor kosong' }}<br>
+          Alasan: {{ event.reason }}<br>
+        {% elif event.action == 'registration.attendance_corrected' %}
+          Alasan: {{ event.reason }}<br>
+        {% else %}
+          {{ event.reason }}<br>
+        {% endif %}
+        <small>{{ event.created_at|date:'d M Y H:i' }} WIB · {{ event.created_by.get_username }}</small>
+      </p>
+    {% empty %}
+      <p>Belum ada riwayat.</p>
+    {% endfor %}
+  </div>
+</details>
+
+{% if membership.role == 'owner' and registration.status != 'cancelled' and registration.status != 'completed' %}
+  {% if registration.line.product.kind != 'course' or course_progress.attended_sessions == 0 %}
+    <details class="panel spaced">
+      <summary class="panel-heading"><strong>Pembatalan peserta</strong></summary>
+      <div class="panel-body">
+        <p>Pembatalan dapat mengoreksi unit layanan dan invoice. Pengembalian uang diperiksa terpisah oleh Finance.</p>
+        <a class="button button-secondary" href="{% url 'operations:registration_action' registration.pk 'cancel' %}">Batalkan peserta</a>
+      </div>
+    </details>
+  {% endif %}
+{% endif %}
+{% endblock %}

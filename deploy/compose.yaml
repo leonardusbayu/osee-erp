@@ -39,7 +39,21 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       OSEE_TRUSTED_PROXY_IP: '${OSEE_TRUSTED_PROXY_IP:-172.30.77.10}'
       DJANGO_MEDIA_ROOT: /app/private/uploads
-    secrets: [django_secret, otp_key, postgres_password]
+      OPENROUTER_API_KEY_FILE: /run/secrets/openrouter_api_key
+      OPENROUTER_MODEL: '${OPENROUTER_MODEL:-}'
+      OPENROUTER_PROVIDER: '${OPENROUTER_PROVIDER:-}'
+      OPENROUTER_MONTHLY_BUDGET_USD: '${OPENROUTER_MONTHLY_BUDGET_USD:-5}'
+      OPENROUTER_MAX_REQUEST_COST_USD: '${OPENROUTER_MAX_REQUEST_COST_USD:-0}'
+      DIRECTOR_OPENROUTER_API_KEY_FILE: /run/secrets/director_openrouter_api_key
+      DIRECTOR_OPENROUTER_MODEL: '${DIRECTOR_OPENROUTER_MODEL:-}'
+      DIRECTOR_OPENROUTER_PROVIDER: '${DIRECTOR_OPENROUTER_PROVIDER:-}'
+      DIRECTOR_AI_ENDPOINT_APPROVED: '${DIRECTOR_AI_ENDPOINT_APPROVED:-0}'
+      DIRECTOR_AI_PRIVATE_AGGREGATES_ENABLED: '${DIRECTOR_AI_PRIVATE_AGGREGATES_ENABLED:-0}'
+      DIRECTOR_AI_MAX_REQUEST_COST_USD: '${DIRECTOR_AI_MAX_REQUEST_COST_USD:-0}'
+      DIRECTOR_AI_MONTHLY_BUDGET_USD: '${DIRECTOR_AI_MONTHLY_BUDGET_USD:-0}'
+      DIRECTOR_AI_USER_MONTHLY_BUDGET_USD: '${DIRECTOR_AI_USER_MONTHLY_BUDGET_USD:-0}'
+      MARKETING_AI_PRIVATE_AGGREGATES_ENABLED: '${MARKETING_AI_PRIVATE_AGGREGATES_ENABLED:-0}'
+    secrets: [django_secret, otp_key, postgres_password, openrouter_api_key, director_openrouter_api_key]
     volumes: [private_data:/app/private]
     networks: [private]
     depends_on:
@@ -90,3 +104,5 @@ secrets:
   django_secret: {file: ./secrets/django-secret}
   otp_key: {file: ./secrets/otp-key}
   postgres_password: {file: ./secrets/postgres-password}
+  openrouter_api_key: {file: ./secrets/openrouter-api-key}
+  director_openrouter_api_key: {file: ./secrets/director-openrouter-api-key}

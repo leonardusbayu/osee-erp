@@ -1,0 +1,122 @@
+{% extends 'base.html' %}
+{% block title %}Sumber Pajak{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <div class="eyebrow">RUJUKAN UMUM</div>
+    <h1>Sumber pajak<span class="heading-dot">.</span></h1>
+    <p>Lihat rujukan yang digunakan aplikasi dan versi yang masih perlu diperiksa.</p>
+  </div>
+</div>
+<div class="page-tabs">
+  <a href="{% url 'tax_workspace' %}">Pajak bulanan</a>
+  <a href="{% url 'annual_tax' %}">SPT Tahunan Badan</a>
+  <a href="{% url 'chat' %}">Tanya Pajak</a>
+  <a href="{% url 'taxes:source_reviews' %}" class="active" aria-current="page">Sumber pajak</a>
+</div>
+<div class="info-strip">
+  {% include 'app/icons.html' with name='info' %}
+  <span>Penerbitan sumber tidak mengubah pajak perusahaan, transaksi, profil, atau laporan. Hanya rujukan umum yang berubah setelah diperiksa dan disetujui.</span>
+</div>
+
+<section class="panel" style="margin-bottom:24px">
+  <div class="panel-heading">
+    <div><h2>Status rujukan</h2><p>Rujukan yang belum aktif tidak dipakai untuk jawaban pajak.</p></div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Rujukan resmi</th><th>Status</th><th>Langkah berikutnya</th></tr></thead>
+      <tbody>
+        {% for row in status_rows %}
+          <tr>
+            <td><a class="text-link" href="{{ row.url }}" target="_blank" rel="noopener noreferrer">{{ row.title }} ↗</a></td>
+            <td><strong>{{ row.status }}</strong></td>
+            <td style="white-space:normal;min-width:240px">{{ row.detail }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="3">Belum ada rujukan yang disiapkan.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel" style="margin-bottom:24px">
+  <div class="panel-heading">
+    <div><h2>Riwayat penerbitan</h2><p>Catatan versi yang pernah diterbitkan, pemeriksanya, akun penerbit, dan bukti pemeriksaan.</p></div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Rujukan</th><th>Diperiksa oleh</th><th>Diterbitkan oleh</th><th>Catatan pemeriksaan</th><th>Tanggal</th></tr></thead>
+      <tbody>
+        {% for publication in publication_history %}
+          <tr>
+            <td>{{ publication.revision.snapshot.title|default:publication.revision.source.title }}</td>
+            <td>{{ publication.reviewer_name }}</td>
+            <td>{% if publication.published_by %}{{ publication.published_by.get_full_name|default:publication.published_by.get_username }}{% else %}Akun penerbit tidak tercatat{% endif %}</td>
+            <td style="white-space:normal;min-width:220px">{{ publication.review_reference }}</td>
+            <td>{{ publication.created_at|date:'d M Y H:i' }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">Belum ada sumber yang diterbitkan.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel" style="margin-bottom:24px">
+  <div class="panel-heading">
+    <div><h2>Versi menunggu pemeriksaan</h2><p>Periksa sumber resmi, ringkasan, dan tanggal berlaku sebelum menerbitkan.</p></div>
+    <span class="pill {% if pending_revisions %}pill-amber{% else %}pill-green{% endif %}">{{ pending_revisions|length }} versi</span>
+  </div>
+  <div class="panel-body">
+    {% for revision in pending_revisions %}
+      <details class="settings-section">
+        <summary><strong>{{ revision.snapshot.title|default:revision.source.title }}</strong><small>Ditinjau {{ revision.snapshot.reviewed_on|default:'tanggal belum tercatat' }} · versi {{ revision.pk }}</small></summary>
+        <dl class="compact-details">
+          <div><dt>Penerbit</dt><dd>{{ revision.snapshot.issuer }}</dd></div>
+          <div><dt>Pasal / bagian</dt><dd>{{ revision.snapshot.article|default:'Belum disebutkan' }}</dd></div>
+          <div><dt>Berlaku mulai</dt><dd>{{ revision.snapshot.effective_from|default:'Belum ditentukan' }}</dd></div>
+          <div><dt>Berlaku sampai</dt><dd>{{ revision.snapshot.effective_until|default:'Tidak disebutkan' }}</dd></div>
+        </dl>
+        <p>{{ revision.snapshot.summary }}</p>
+        <p><a class="text-link" href="{{ revision.snapshot.url }}" target="_blank" rel="noopener noreferrer">Buka dokumen resmi ↗</a></p>
+      </details>
+    {% empty %}
+      <div class="empty-state">
+        <span>{% include 'app/icons.html' with name='check' %}</span>
+        <h3>Tidak ada versi baru menunggu pemeriksaan</h3>
+        <p>Status aktif dan rujukan yang masih perlu diperiksa ada pada tabel di atas.</p>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Catat nama pemeriksa</h2><p>Nama dan bukti pemeriksaan disimpan bersama versi yang diterbitkan.</p></div></div>
+  <div class="panel-body">
+    {% if form %}
+      {% if pending_revisions %}
+        <form method="post" class="form-grid" novalidate>
+          {% csrf_token %}
+          {% if form.non_field_errors %}<div class="field-error" role="alert">{{ form.non_field_errors }}</div>{% endif %}
+          {% for field in form %}
+            <div class="field{% if field.name == 'confirm_reviewed' %} field-full{% endif %}">
+              {{ field.label_tag }}
+              {{ field }}
+              {% if field.help_text %}<small class="field-help">{{ field.help_text }}</small>{% endif %}
+              {% for error in field.errors %}<small class="field-error" role="alert">{{ error }}</small>{% endfor %}
+            </div>
+          {% endfor %}
+          <div class="field-full"><button class="button button-primary" type="submit">Terbitkan versi yang sudah diperiksa</button></div>
+        </form>
+      {% else %}
+        <p class="field-help">Belum ada versi yang dapat diterbitkan. Sumber yang kedaluwarsa perlu diperbarui dan diperiksa lebih dulu.</p>
+      {% endif %}
+    {% else %}
+      <p class="field-help">Penerbitan hanya dapat dilakukan oleh administrator sistem yang memiliki akses khusus. Peran Owner atau Finance saja tidak cukup untuk mengubah rujukan umum.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

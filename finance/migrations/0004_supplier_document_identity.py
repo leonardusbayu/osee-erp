@@ -4,34 +4,41 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0004_documented_tax_workflows'),
-        ('finance', '0003_actual_delivery_evidence'),
+        ("core", "0004_documented_tax_workflows"),
+        ("finance", "0003_actual_delivery_evidence"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='bill',
-            name='submission_key',
+            model_name="bill",
+            name="submission_key",
             field=models.UUIDField(blank=True, editable=False, null=True),
         ),
         migrations.AddField(
-            model_name='bill',
-            name='supplier_reference',
+            model_name="bill",
+            name="supplier_reference",
             field=models.CharField(blank=True, max_length=160),
         ),
         migrations.AddField(
-            model_name='bill',
-            name='supplier_reference_key',
+            model_name="bill",
+            name="supplier_reference_key",
             field=models.CharField(blank=True, editable=False, max_length=480),
         ),
         migrations.AddConstraint(
-            model_name='bill',
-            constraint=models.UniqueConstraint(condition=models.Q(('supplier_reference_key', ''), _negated=True), fields=('organization', 'supplier', 'supplier_reference_key'), name='finance_bill_supplier_source'),
+            model_name="bill",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(("supplier_reference_key", ""), _negated=True),
+                fields=("organization", "supplier", "supplier_reference_key"),
+                name="finance_bill_supplier_source",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='bill',
-            constraint=models.UniqueConstraint(condition=models.Q(('submission_key__isnull', False)), fields=('organization', 'submission_key'), name='finance_bill_submission'),
+            model_name="bill",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(("submission_key__isnull", False)),
+                fields=("organization", "submission_key"),
+                name="finance_bill_submission",
+            ),
         ),
     ]

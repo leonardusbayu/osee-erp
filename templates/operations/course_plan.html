@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% load finance_format %}
+{% block title %}Jadwal kursus{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <a href="{% url 'operations:order' line.order_id %}" class="back-link">← {{ line.order.reference }}</a>
+    <h1>Jadwal kursus</h1>
+    <p>{{ line.product.name }} · {{ line.reference }} · {{ line.order.buyer.name }}</p>
+  </div>
+</div>
+{% include 'operations/nav.html' %}
+
+<div class="info-strip"><span><strong>Catat jadwal dan kehadiran tiap pertemuan.</strong> Data ini tidak membuat invoice atau membukukan pendapatan. Finance tetap memeriksa pencatatan pendapatan kursus sesuai kebijakan yang disetujui.</span></div>
+
+{% if not plan %}
+  <section class="panel form-panel">
+    <div class="panel-heading"><h2>Siapkan paket kursus</h2></div>
+    <div class="panel-body">
+      <p>Masukkan jumlah pertemuan sesuai penawaran atau kesepakatan yang sudah dikonfirmasi.</p>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="configure">
+        {% include 'marketing/fields.html' with form=configure_form %}
+        <div class="form-actions"><a class="button button-secondary" href="{% url 'operations:order' line.order_id %}">Batal</a><button class="button button-primary" type="submit">Simpan paket</button></div>
+      </form>
+    </div>
+  </section>
+{% else %}
+  <section class="panel">
+    <div class="panel-heading"><h2>Ringkasan kursus</h2><span>{{ meetings|length }} dari {{ plan.total_sessions }} pertemuan dijadwalkan</span></div>
+    <div class="panel-body">
+      <p>{{ registrations|length }} peserta · Jumlah pertemuan sesuai kesepakatan yang dicatat Finance.</p>
+      {% if meetings|length < plan.total_sessions %}
+        <p class="field-help">Jadwalkan pertemuan berikutnya setelah mengonfirmasi waktu dengan peserta.</p>
+      {% else %}
+        <p class="field-help">Semua pertemuan dalam paket sudah dijadwalkan.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if meetings|length < plan.total_sessions %}
+    <section class="panel form-panel spaced">
+      <div class="panel-heading"><h2>Jadwalkan pertemuan {{ meetings|length|add:1 }}</h2></div>
+      <div class="panel-body">
+        <form method="post" novalidate>
+          {% csrf_token %}
+          <input type="hidden" name="action" value="schedule">
+          {% include 'marketing/fields.html' with form=meeting_form %}
+          <div class="form-actions"><a class="button button-secondary" href="{% url 'operations:order' line.order_id %}">Kembali ke pesanan</a><button class="button button-primary" type="submit">Simpan jadwal</button></div>
+        </form>
+      </div>
+    </section>
+  {% endif %}
+
+  {% if can_revise %}
+    <details class="panel spaced">
+      <summary class="panel-heading"><strong>Ubah jumlah pertemuan</strong></summary>
+      <div class="panel-body">
+        <p>Perubahan disimpan di riwayat. Jumlah tidak dapat dibuat lebih kecil dari jadwal atau pertemuan yang sudah dihadiri.</p>
+        <form method="post" novalidate>
+          {% csrf_token %}
+          <input type="hidden" name="action" value="revise">
+          {% include 'marketing/fields.html' with form=revision_form %}
+          <button class="button button-secondary" type="submit">Simpan perubahan</button>
+        </form>
+      </div>
+    </details>
+  {% endif %}
+
+  <section class="panel spaced">
+    <div class="panel-heading"><h2>Peserta dan progres</h2></div>
+    {% if registrations %}
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Peserta</th><th>Sudah hadir</th><th>Sesi tersisa</th></tr></thead><tbody>
+      {% for row in registrations %}<tr><td><a href="{% url 'operations:registration' row.registration.pk %}">{{ row.registration.participant.name }}</a></td><td>{{ row.attended }} / {{ plan.total_sessions }}</td><td>{{ row.remaining }}</td></tr>{% endfor %}
+      </tbody></table></div>
+    {% else %}<div class="panel-body"><p>Belum ada peserta terdaftar untuk paket kursus ini.</p><a class="button button-secondary" href="{% url 'operations:registration_create' line.pk %}">Tambah peserta</a></div>{% endif %}
+  </section>
+
+  {% for meeting in meetings %}
+    <section class="panel spaced">
+      <div class="panel-heading"><h2>Pertemuan {{ meeting.number }}</h2><span>{{ meeting.starts_at|date:'D, d M Y · H:i' }} WIB</span></div>
+      {% if meeting.can_reschedule %}<div class="panel-body"><a class="button button-secondary" href="{% url 'operations:course_meeting_reschedule' meeting.pk %}">Ubah jadwal</a></div>{% endif %}
+      {% if meeting.history %}<div class="panel-body"><details><summary>Riwayat perubahan jadwal ({{ meeting.history|length }})</summary>{% for event in meeting.history %}<p>{{ event.before.starts_at }} → {{ event.after.starts_at }}<br>{{ event.reason }}<br><small>{{ event.created_by.get_username }} · {{ event.created_at|date:'d M Y H:i' }} WIB</small></p>{% endfor %}</details></div>{% endif %}
+      {% if meeting.participant_rows %}
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>Peserta</th><th>Kehadiran dan bukti</th><th>Tindakan</th></tr></thead><tbody>
+        {% for row in meeting.participant_rows %}<tr><td>{{ row.registration.participant.name }}</td><td>{% if row.attendance %}{{ row.attendance.get_status_display }}<br><small>Bukti saat ini: {{ row.attendance.evidence }}</small>{% if row.history %}<details><summary>Riwayat koreksi ({{ row.history|length }})</summary>{% for event in row.history %}<p>{{ event.before.status }} → {{ event.after.status }} · {{ event.reason }}{% if event.before.evidence %}<br>Bukti sebelumnya: {{ event.before.evidence }}{% endif %}{% if event.after.evidence %}<br>Bukti baru: {{ event.after.evidence }}{% endif %}<br><small>{{ event.created_by.get_username }} · {{ event.created_at|date:'d M Y H:i' }} WIB</small></p>{% endfor %}</details>{% endif %}{% else %}Belum dicatat{% endif %}</td><td>{% if row.attendance %}<a href="{% url 'operations:course_attendance' row.registration.pk meeting.pk %}">Koreksi</a>{% else %}<a href="{% url 'operations:course_attendance' row.registration.pk meeting.pk %}">Catat kehadiran</a>{% endif %}</td></tr>{% endfor %}
+        </tbody></table></div>
+      {% else %}<div class="panel-body"><p>Tambahkan peserta untuk mulai mencatat kehadiran.</p></div>{% endif %}
+    </section>
+  {% empty %}
+    <section class="panel spaced"><div class="panel-body"><p>Belum ada pertemuan. Jadwalkan pertemuan pertama di atas.</p></div></section>
+  {% endfor %}
+{% endif %}
+{% endblock %}

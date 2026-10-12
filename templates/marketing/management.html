@@ -1,0 +1,8 @@
+{% extends 'marketing/base.html' %}{% block title %}Ringkasan hasil marketing{% endblock %}
+{% block marketing_content %}
+<div class="page-heading"><div><div class="eyebrow">DASAR KEPUTUSAN</div><h1>Hasil dan pelaksanaan marketing</h1><p>Periksa sumber, hasil target, dan bukti pekerjaan sebelum menentukan langkah berikutnya.</p></div></div>
+<form method="get" class="panel filter-bar"><label>Mulai <input type="date" name="start" value="{{ management.period.start }}" required></label><label>Sampai <input type="date" name="end" value="{{ management.period.end }}" required></label><button class="button">Tampilkan</button></form>
+{% include 'marketing/management_panel.html' %}
+<section class="panel director-panel"><h2>Target dan tindak lanjut</h2>{% for row in management.targets %}<div class="director-row"><div><h3><a href="{{ row.url }}">{{ row.title }}</a></h3><p>{{ row.metric }} · {{ row.evaluation.state_label }}{% if row.stale_review %} · Evaluasi tersimpan perlu diperbarui{% endif %}</p><p>{{ row.evaluation.completeness.label }}</p>{% if not row.evaluation.completeness.complete %}<a class="text-link" href="{% url 'marketing:source_period_create' row.id %}">Periksa seluruh sumber →</a>{% else %}<a class="text-link" href="{{ row.url }}">Lihat hasil dan pemeriksaan →</a>{% endif %}</div></div>{% empty %}<p>Belum ada target aktif yang bersinggungan dengan periode ini.</p><a href="{% url 'marketing:kpi_create' %}">Susun target dengan dasar yang disepakati</a>{% endfor %}</section>
+<section class="panel director-panel"><h2>Dasar pembacaan</h2>{% for note in management.limitations %}<p>{{ note }}</p>{% endfor %}<p>Sidik data: <code>{{ management.fingerprint }}</code></p></section>
+{% endblock %}

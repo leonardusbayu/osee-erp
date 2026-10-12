@@ -1,0 +1,41 @@
+/* Scoped, readable old-balance sources and audit history. */
+.opening-balance-page { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.opening-balance-page .page-heading > *,
+.opening-balance-page .panel-heading > *,
+.opening-balance-page .detail-layout > *,
+.opening-balance-page .form-layout > *,
+.opening-balance-page .panel { min-width: 0; max-width: 100%; }
+.opening-balance-page .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; }
+.opening-balance-page .data-table th,
+.opening-balance-page .data-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.opening-balance-page .data-table .num { white-space: nowrap; }
+.opening-balance-page .compact-details,
+.opening-balance-page .compact-details dt,
+.opening-balance-page .compact-details dd { min-width: 0; }
+.opening-balance-page input,
+.opening-balance-page select,
+.opening-balance-page textarea { min-width: 0; max-width: 100%; }
+.opening-kind-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.opening-form-caption { margin: 0 0 20px; font-size: 12px; color: var(--muted); }
+.opening-balance-page .opening-direction { border: 0; padding: 0; margin-left: 0; margin-right: 0; min-width: 0; }
+.opening-balance-page .opening-direction legend { font-weight: 600; margin-bottom: 10px; }
+.opening-balance-page .opening-direction-choice { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.opening-balance-page .opening-direction-choice input { width: auto; margin: 0; accent-color: var(--primary); }
+.opening-balance-page .opening-direction-choice:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.opening-balance-page .heading-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.opening-balance-page .opening-row-actions { display: flex; flex-wrap: wrap; margin-top: 10px; }
+.opening-balance-page .opening-row-actions .button { white-space: normal; }
+.opening-date-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+.opening-date-filter input[type="date"] { border: 1px solid var(--line); border-radius: 7px; padding: 10px 12px; background: white; color: var(--ink); }
+@media (max-width: 600px) {
+  .opening-balance-page .compact-details > div { display: block; margin-bottom: 12px; }
+  .opening-balance-page .compact-details dd { margin-top: 3px; }
+  .opening-balance-page .opening-records,
+  .opening-balance-page .opening-records tbody { display: block; width: 100%; }
+  .opening-balance-page .opening-records thead { display: none; }
+  .opening-balance-page .opening-records tr { display: block; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .opening-balance-page .opening-records td { display: block; padding: 7px 0; border: 0; text-align: left; white-space: normal; }
+  .opening-balance-page .opening-records td[data-label]::before { content: attr(data-label); display: block; font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .opening-balance-page .heading-actions,
+  .opening-balance-page .form-actions { flex-wrap: wrap; }
+}
